@@ -1,0 +1,10 @@
+__pycache__/
+.ipynb_checkpoints/
+Untitled.ipynb
+*.rtf
+*.py[cod]
+
+*.DS_Store
+launch.json
+
+*.dat
