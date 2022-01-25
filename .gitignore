@@ -3,6 +3,7 @@ __pycache__/
 Untitled.ipynb
 *.rtf
 *.py[cod]
+*.png
 
 *.DS_Store
 launch.json

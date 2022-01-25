@@ -1,6 +1,5 @@
 from recsys.recommendation_list import recommendation_list
 
-EPSILON = 1e-6
 
 # Calculates the support as:
 # [(O(L + {i}) / O(L)) - 1] * len(L + {i})
@@ -26,7 +25,7 @@ class relative_gain_support_function:
             obj_value = self.objective(recsys_list, context) # TODO improve cache
             self.cache_value, self.cache_extra_value = self._get_obj_value(obj_value), self._get_cache_extra_value(obj_value)
             if self.cache_value == 0.0:
-                self.cache_value = EPSILON
+                assert False
             self.cache_key = recsys_list.items[:]
         
         # TODO mention optimization

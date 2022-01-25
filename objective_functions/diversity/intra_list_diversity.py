@@ -1,11 +1,13 @@
 import numpy as np
-from itertools import permutations
+from itertools import combinations
 
 from recsys.recommendation_list import recommendation_list
 
 class intra_list_diversity:
     def __init__(self, similarity_matrix):
         self.similarity_matrix = similarity_matrix
+        x = (1.0 - self.similarity_matrix)
+        self.min_diversity = x[x > 0].min()
 
     def __call__(self, recommendation_list, context, m=None):
         n = len(recommendation_list.items)
@@ -19,12 +21,17 @@ class intra_list_diversity:
         if m is None:
             m = n
         
-        return sum(
+        div = sum(
             map( # We are exploiting symmetry here
                 lambda x: 2.0 * (1.0 - self.similarity_matrix[self._get_id(x[0], context), self._get_id(x[1], context)]), # TODO exploit symmetry
-                permutations(recommendation_list.items[:m], 2)
+                combinations(recommendation_list.items[:m], 2)
             )
         ) / (n * (n - 1))
+
+        if div <= 0.0:
+            return self.min_diversity
+
+        return div
 
     def get_name(self):
         return self.__class__.__name__

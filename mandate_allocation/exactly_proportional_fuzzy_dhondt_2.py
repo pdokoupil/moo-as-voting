@@ -40,26 +40,28 @@ class exactly_proportional_fuzzy_dhondt_2:
 
         for party_name, candidate_group in candidate_groups.items():
             for candidate, support in candidate_group.items():
-                tot_items[candidate] += support #* votes[party_name]
+                # tot_items[candidate] += support #* votes[party_name]
+                tot_items[candidate] = max(tot_items[candidate], tot_items[candidate] + support)
                 
         gain_items = defaultdict(float) # Initialize to negative infinity
         for party_name, candidate_group in candidate_groups.items():
+            
             if votes[party_name] == 0:
                 continue
+            
             for candidate in tot_items.keys(): # We need to iterate over all items, note that candidates for parties could differ
-                limit = tot_items[candidate] * votes[party_name]
-
-                if limit <= self.s_r[party_name]:
-                    e_r = 0
-                else:
-                    e_r = limit - self.s_r[party_name]
-
-                # sup = max(
-                #     support_towards_party(candidate, party_name),
-                #     support_towards_party(candidate, party_name) + (self.s_r[party_name] - tot_items[candidate] * votes[party_name])
-                # )
+                unused_p = tot_items[candidate] * votes[party_name] - self.s_r[party_name]
                 sup = support_towards_party(candidate, party_name)
-                gain_items[candidate] += min(sup, e_r)
+                if unused_p >= 0 and sup >= 0:
+                    gain_items[candidate] += min(sup, unused_p)
+                elif unused_p <= 0 and sup <= 0:
+                    gain_items[candidate] += min(0, sup - unused_p)
+                elif unused_p <= 0 and sup >= 0:
+                    gain_items[candidate] += min(sup, unused_p)
+                elif unused_p >= 0 and sup <= 0:
+                    gain_items[candidate] += min(0, sup - unused_p)
+                else:
+                    assert False
 
         max_gain_item, max_gain =  max(gain_items.items(), key=lambda x: x[1])
 
@@ -67,6 +69,11 @@ class exactly_proportional_fuzzy_dhondt_2:
         for p, s in self.s_r.items():
             self.s_r[p] = s + support_towards_party(max_gain_item, p)
             self.tot += self.s_r[p]
+
+        supports = dict()
+        for party_name, candidates in candidate_groups.items():
+            if max_gain_item in candidates:
+                supports[party_name] = candidates[max_gain_item]
 
         for _, candidates in candidate_groups.items():
             if max_gain_item in candidates:
@@ -76,7 +83,7 @@ class exactly_proportional_fuzzy_dhondt_2:
             self._reset()
 
         assert max_gain_item is not None, "Valid item must be returned"
-        return max_gain_item, ("rating_based_relevance", 123.0)
+        return max_gain_item, supports
 
     # TODO implement "using"/"with" pattern
     def _reset(self):

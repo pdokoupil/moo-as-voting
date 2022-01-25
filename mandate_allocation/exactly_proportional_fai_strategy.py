@@ -58,7 +58,7 @@ class exactly_proportional_fai_strategy:
         if len(partial_list) + 1 == num_mandates:
             self._reset()
 
-        return best_candidate, (next_party, best_candidate_support)
+        return best_candidate, { next_party: best_candidate_support }
 
     def __repr__(self):
         return f"fai_strategy(first_party={self.first_party}, initialize_first_party_random={self.initialize_first_party_random}"

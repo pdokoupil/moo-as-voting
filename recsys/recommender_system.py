@@ -162,8 +162,9 @@ class recommender_system:
                 print(f"Predicting for: {user}, took: {time.perf_counter() - start_time}")
                 start_time = time.perf_counter()
             top_k_list, per_user_support = self.get_recommendations(user) # TODO remove per user support
-            for j, (party, support) in per_user_support.items(): # TODO REMOVE
-                per_user_supports[party][j].append(support) # TODO REMOVE
+            for j, party_supports in per_user_support.items(): # TODO REMOVE
+                for party, support in party_supports.items():
+                    per_user_supports[party][j].append(support) # TODO REMOVE
 
             user_id = self.context.recsys_statistics.user_to_user_id[user]
             ranking.extend([(user, item, self.context.recsys_statistics.rating_matrix[user_id, self.context.recsys_statistics.item_to_item_id[item]]) for item in top_k_list.items])

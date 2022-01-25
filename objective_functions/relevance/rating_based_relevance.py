@@ -9,6 +9,8 @@ class rating_based_relevance:
         nonzero = self.rating_matrix[np.nonzero(self.rating_matrix)]
         self.avg_rating = nonzero.sum() / nonzero.size
 
+        self.min_rating = self.rating_matrix[self.rating_matrix > 0].min() * 0.1
+
     def __call__(self, recommendation_list, context, m=None):
         n = len(recommendation_list.items)
         if m is None:
@@ -28,7 +30,10 @@ class rating_based_relevance:
         ratings = 0.0
         for item in recommendation_list.items[:m]:
             item_id = context.recsys_statistics.item_to_item_id[item]
-            ratings += rating_row[item_id]
+            if rating_row[item_id] > 0:
+                ratings += rating_row[item_id]
+            else:
+                ratings += self.min_rating
 
         return ratings / n
 

@@ -26,6 +26,7 @@ LIGHTFM_TEST_FOLD_PATH = f"{cmd_args.dataset_path_prefix}/ml-100k-folds/lightfmf
 
 method_to_method_name = {
     "exactly_proportional_fuzzy_dhondt": "EP-FuzzDA",
+    "exactly_proportional_fuzzy_dhondt_2": "EP-FuzzDA2",
     "sainte_lague_method": "Sainte Lague",
     "fai_strategy": "FAI",
     "exactly_proportional_fai_strategy": "EP-FAI",
@@ -44,14 +45,15 @@ def get_arguments():
     objective_weights = [
         [1, 0, 0], [0, 1, 0], [0, 0, 1],
         [0.5, 0.25, 0.25],
-        # [0.25, 0.5, 0.25], [0.25, 0.25, 0.5],
-        # [1.0/3.0, 1.0/3.0, 1.0/3.0],
-        # [0.5, 0.3, 0.2], [0.5, 0.2, 0.3],
-        # [0.3, 0.5, 0.2], [0.2, 0.5, 0.3],
-        # [0.2, 0.3, 0.5], [0.3, 0.2, 0.5]
+        [0.25, 0.5, 0.25], [0.25, 0.25, 0.5],
+        [1.0/3.0, 1.0/3.0, 1.0/3.0],
+        [0.5, 0.3, 0.2], [0.5, 0.2, 0.3],
+        [0.3, 0.5, 0.2], [0.2, 0.5, 0.3],
+        [0.2, 0.3, 0.5], [0.3, 0.2, 0.5]
     ]
     mandate_allocation = [
         exactly_proportional_fuzzy_dhondt,
+        exactly_proportional_fuzzy_dhondt_2,
         #fai_strategy,
         #sainte_lague_method,
         #exactly_proportional_fai_strategy
@@ -70,7 +72,7 @@ def get_arguments():
         name = f"{folds};{weights};{method.__name__}".replace(" ", "")
         yield dummy_args(seed=SEED, train_fold_path=train_fold_path, test_fold_path=test_fold_path,
             objective_weights=weights, mandate_allocation=method,
-            ranking_size=RANKING_SIZE, experiment_name=name
+            ranking_size=RANKING_SIZE, experiment_name=name, support_function=relative_gain_support_function
         )
 
 def generate_latex_tables(all_results, plot_save_path_prefix):

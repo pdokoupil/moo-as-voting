@@ -12,7 +12,7 @@ class exactly_proportional_fuzzy_dhondt:
         self.last_call_votes = None
 
     # Expected to be called iteratively
-    def __call__(self, candidate_groups, votes, partial_list, num_mandates):
+    def __call__(self, candidate_groups, votes, partial_list, num_mandates, *args):
         if self.last_call_votes is None:
             self.last_call_votes = votes
         assert self.last_call_votes == votes, "Votes cannot change in-between calls" # TODO implement
@@ -65,6 +65,11 @@ class exactly_proportional_fuzzy_dhondt:
             self.s_r[p] = s + support_towards_party(max_gain_item, p)
             self.tot += self.s_r[p]
 
+        supports = dict()
+        for party_name, candidates in candidate_groups.items():
+            if max_gain_item in candidates:
+                supports[party_name] = candidates[max_gain_item]
+
         for _, candidates in candidate_groups.items():
             if max_gain_item in candidates:
                 del candidates[max_gain_item]
@@ -73,7 +78,7 @@ class exactly_proportional_fuzzy_dhondt:
             self._reset()
 
         assert max_gain_item is not None, "Valid item must be returned"
-        return max_gain_item, ("rating_based_relevance", 123.0)
+        return max_gain_item, supports
 
     # TODO implement "using"/"with" pattern
     def _reset(self):

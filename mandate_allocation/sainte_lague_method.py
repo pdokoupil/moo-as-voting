@@ -26,12 +26,17 @@ class sainte_lague_method:
         
         self.seats_per_party[max_quotient_party] += 1
 
+        supports = dict()
+        for party_name, candidates in candidate_groups.items():
+            if best_candidate in candidates:
+                supports[party_name] = candidates[best_candidate]
+
         del max_quotient_party_candidates[best_candidate] # TODO remove from all candidate groups
 
         if len(partial_list) + 1 == num_mandates:
             self._reset()
         
-        return best_candidate, ("rating_based_relevance", 123.0)
+        return best_candidate, supports
 
     # TODO implement "using"/"with" pattern
     def _reset(self):

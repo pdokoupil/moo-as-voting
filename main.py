@@ -597,7 +597,7 @@ def main():
     parser.add_argument("--fold_dest", type=str, default="C:/Users/PD/Downloads/ml-100k-folds/lightfmfolds", help="Path to the directory where folds could be stored")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--separator", type=str, default="\t")
-    parser.add_argument("--objective_weights", type=str, default="0.0, 1.0, 0.0", help="Weights of the individual objectives, in format 'x, y, z'")
+    parser.add_argument("--objective_weights", type=str, default="0.33333,0.33333,0.33333", help="Weights of the individual objectives, in format 'x, y, z'")
     parser.add_argument(
         "--mandate_allocation", type=str, default="exactly_proportional_fuzzy_dhondt_2",
         help="allowed values are {exactly_proportional_fuzzy_dhondt, exactly_proportional_fuzzy_dhondt_2, fai_strategy, random_mandate_allocation, sainte_lague_method, exactly_proportional_fai_strategy}"
@@ -611,6 +611,8 @@ def main():
     args.objective_weights = list(map(float, args.objective_weights.split(",")))
     args.mandate_allocation = globals()[args.mandate_allocation] # Get factory/constructor for mandate allocation algorithm
     args.support_function = globals()[args.support_function]
+    if not args.experiment_name:
+        args.experiment_name = f"N={args.enable_normalization},MA={args.mandate_allocation.__name__},W={args.objective_weights},SF={args.support_function.__name__}" # Default experiment name
 
     random.seed(args.seed)
     np.random.seed(args.seed)
