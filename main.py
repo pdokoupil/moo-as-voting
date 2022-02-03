@@ -20,9 +20,15 @@ from objective_functions.relevance.rating_based_relevance import rating_based_re
 from objective_functions.relevance.precision import precision
 from objective_functions.diversity.expected_intra_list_diversity import expected_intra_list_diversity
 from objective_functions.novelty.expected_popularity_complement import expected_popularity_complement
+from objective_functions.novelty.popularity_complement import popularity_complement
+
+from support_functions.normalization.cdf import cdf
+from support_functions.normalization.min_max_scaling import min_max_scaling
+from support_functions.normalization.standardization import standardization
 
 from filter_functions.top_k_filter_function import top_k_filter_function
 from support_functions.marginal_gain_support_function import marginal_gain_support_function
+from support_functions.normalizing_marginal_gain_support_function import normalizing_marginal_gain_support_function
 from support_functions.relative_gain_support_function import relative_gain_support_function
 from voting_functions.constant_voting_function import constant_voting_function
 from voting_functions.uniform_voting_function import uniform_voting_function
@@ -45,6 +51,8 @@ import copy
 from caserec.recommenders.rating_prediction.itemknn import ItemKNN as RatingItemKNN
 from caserec.recommenders.rating_prediction.userknn import UserKNN as RatingUserKNN
 from caserec.utils.process_data import ReadFile, WriteFile
+from caserec.evaluation.rating_prediction import RatingPredictionEvaluation
+from caserec.recommenders.rating_prediction.svd import SVD
 
 def calculate_diversity(top_k, recsys_statistics):
     d = 0.0
@@ -149,7 +157,7 @@ def _mean_average_precision(args, ranking, test_dataset_statistics, k):
     return p / users
 
 def _is_relevant(item, user, test_dataset_statistics):
-    if user in test_dataset_statistics.feedback and item in test_dataset_statistics.feedback[user] and test_dataset_statistics.feedback[user][item] >= 5.0:
+    if user in test_dataset_statistics.feedback and item in test_dataset_statistics.feedback[user]: # and test_dataset_statistics.feedback[user][item] >= 5.0:
         return True
     return False
     #return user in test_dataset_statistics.items_seen_by_user and item in test_dataset_statistics.items_seen_by_user[user]
@@ -167,7 +175,7 @@ def evaluate_map(args, ranking, test_dataset_statistics):
 
 
 # Calculates diversity, all default metrics and other needed metrics
-def custom_evaluate(args, ranking, recsys_statistics, test_dataset_statistics, normalized_ranking=False):
+def custom_evaluate(args, ranking, recsys_statistics, test_dataset_statistics, normalized_ranking=None):
     diversity = evaluate_diversity(args, ranking, recsys_statistics)
     novelty = evaluate_novelty(args, ranking, recsys_statistics)
     map_value = evaluate_map(args, ranking, test_dataset_statistics)
@@ -183,8 +191,8 @@ def custom_evaluate(args, ranking, recsys_statistics, test_dataset_statistics, n
         "per-user-novelty": [calculate_novelty(ranking[i:i+args.ranking_size], recsys_statistics) for i in range(0, len(ranking), args.ranking_size)]
     }
     if normalized_ranking:
-        mean_estimated_rating = np.mean([r[2] for r in ranking]) # Average over all users
-        per_user_mean_estimated_rating = [np.mean(list(map(lambda x: x[2], ranking[i:i+args.ranking_size]))) for i in range(0, len(ranking), args.ranking_size)]
+        mean_estimated_rating = np.mean([r[2] for r in normalized_ranking]) # Average over all users
+        per_user_mean_estimated_rating = [np.mean(list(map(lambda x: x[2], normalized_ranking[i:i+args.ranking_size]))) for i in range(0, len(normalized_ranking), args.ranking_size)]
         print(f"MEAN ESTIMATED RATING: {mean_estimated_rating}")
         results["mer"] = mean_estimated_rating
         results["per-user-mer"] = per_user_mean_estimated_rating
@@ -193,6 +201,70 @@ def custom_evaluate(args, ranking, recsys_statistics, test_dataset_statistics, n
     # for metric, value in recommender.evaluation_results.items():
     #     print(f"{metric} = {value}")
 
+def custom_evaluate_voting(args, ranking, recsys_statistics,
+    test_dataset_statistics, normalized_ranking,
+    voting_recommender, rating_matrix, similarity_matrix):
+    ctx = voting_recommender.context
+    results = custom_evaluate(args, ranking, recsys_statistics, test_dataset_statistics, normalized_ranking)
+    
+    div = intra_list_diversity(similarity_matrix)
+    nov = popularity_complement()
+
+    total_novelty = 0.0
+    total_diversity = 0.0
+    n = 0
+
+    per_user_diversity = []
+    per_user_novelty = []
+
+    for i in range(0, len(ranking), args.ranking_size):
+        top_k_per_user = recommendation_list(args.ranking_size, [i for u, i, r in ranking[i:i+args.ranking_size]])
+
+        diversity = div(top_k_per_user, ctx)
+        novelty = nov(top_k_per_user, ctx)
+
+        per_user_diversity.append(diversity)
+        per_user_novelty.append(novelty)
+
+        total_diversity += diversity
+        total_novelty += novelty
+        n += 1
+    
+    total_diversity = total_diversity / n
+    total_novelty = total_novelty / n
+
+    print(f"DIVERSITY2: {total_diversity}")
+    print(f"NOVELTY2: {total_novelty}")
+    results["diversity"] = total_diversity
+    results["novelty"] = total_novelty
+    results["per-user-diversity"] = per_user_diversity
+    results["per-user-novelty"] = per_user_novelty
+
+
+    print("-------------------")
+    normalizations = voting_recommender.support_normalization
+
+    mer_norm = normalizations[rating_based_relevance.__name__]
+    div_norm = normalizations[intra_list_diversity.__name__]
+    nov_norm = normalizations[popularity_complement.__name__]
+
+    normalized_mer = mer_norm.predict(results["mer"])
+    normalized_diversity = div_norm.predict(results["diversity"])
+    normalized_novelty = nov_norm.predict(results["novelty"])
+    
+    print(f"Normalized MER: {normalized_mer}")
+    print(f"Normalized DIVERSITY2: {normalized_diversity}")
+    print(f"Normalized NOVELTY2: {normalized_novelty}")
+
+    results["normalized-mer"] = normalized_mer
+    results["normalized-diversity"] = normalized_diversity
+    results["normalized-novelty"] = normalized_novelty
+    
+    results["normalized-per-user-mer"] = [mer_norm.predict(x) for x in results["per-user-mer"]]
+    results["normalized-per-user-diversity"] = [div_norm.predict(x) for x in results["per-user-diversity"]]
+    results["normalized-per-user-novelty"] = [nov_norm.predict(x) for x in results["per-user-novelty"]]
+
+    return results
 
 def get_voting_recommender(objective_factories, args):
 
@@ -210,7 +282,7 @@ def get_voting_recommender(objective_factories, args):
         
     # https://stackoverflow.com/questions/32595586/in-python-why-do-lambdas-in-list-comprehensions-overwrite-themselves-in-retrosp
     supports_function_factories = [lambda user, obj_factory=obj_factory: args.support_function(obj_factory(user), user) for obj_factory in objective_factories]
-    filter_function = top_k_filter_function(100)
+    filter_function = top_k_filter_function(2000)
     mandate_allocator = args.mandate_allocation() #fai_strategy() # sainte_lague_method() # random_mandate_allocation()
 
     recommender = recommender_system(
@@ -219,7 +291,7 @@ def get_voting_recommender(objective_factories, args):
         filter_function,
         mandate_allocator,
         args.ranking_size,
-        args.enable_normalization
+        args.support_normalization
     )
     return recommender
 
@@ -326,13 +398,13 @@ def lightfm_comparison():
             for (user, item), rating in data.todok().items():
                 print(f"{user}\t{item}\t{rating}", file=f)
     
-    data = fetch_movielens(min_rating=5.0)
+    data = fetch_movielens()
     model = LightFM(loss="warp")
     model.fit(data["train"], epochs=5, num_threads=4)
     print(f"Lightfm precision@5: {precision_at_k(model, data['test'], k=5).mean()}")
 
-    save_lightfm_data(data["train"], "lightfm_train.dat")
-    save_lightfm_data(data["test"], "lightfm_test.dat")
+    save_lightfm_data(data["train"], "lightfm_train_new.dat")
+    save_lightfm_data(data["test"], "lightfm_test_new.dat")
 
 
     return lightfm_data_to_statistics(data["train"].todok()), lightfm_data_to_statistics(data["test"].todok())
@@ -349,12 +421,14 @@ def validate_dataset(data_statistics):
         for item, rating in ratings.items():
             assert item in data_statistics["items"], f"error validation check item {item}"
 
+def norm(x, old_min, old_max, new_min, new_max):
+    scale = (new_max - new_min) / (old_max - old_min)
+    return x * scale + (new_min - old_min * scale)
+
 def normalize_recommendation_ranking(ranking, min_rating, max_rating):
     # Zeros will map to zeros
     # the rest will be mapped to [min_rating, max_rating]
-    def norm(x, old_min, old_max, new_min, new_max):
-        scale = (new_max - new_min) / (old_max - old_min)
-        return x * scale + (new_min - old_min * scale)
+    
     
     old_min, old_max = min(ranking, key=lambda x: x[2])[2], max(ranking, key=lambda x: x[2])[2]
 
@@ -377,33 +451,39 @@ def project_ranking_into_rating_matrix(ranking, recsys_statistics):
 # Extends rating matrix based on similarities
 def extend_rating_matrix(recsys_statistics):
     rating_matrix_copy = np.zeros_like(recsys_statistics.rating_matrix) #recsys_statistics.rating_matrix.copy() # Otherwise we tend to recommend known items
+    
     n_items = rating_matrix_copy.shape[1]
     k_neighbors = int(np.sqrt(n_items))
 
     assert np.all(recsys_statistics.similarity_matrix >= 0.0) and np.all(recsys_statistics.similarity_matrix <= 1.0)
 
     # Go over all users
-    for user_id in recsys_statistics.user_to_user_id.values():
-        u_list = list(np.flatnonzero(recsys_statistics.rating_matrix[user_id] == 0))
+    for user, user_id in recsys_statistics.user_to_user_id.items():
+        u_list = np.flatnonzero(recsys_statistics.rating_matrix[user_id] == 0)
         seen_items_id = np.flatnonzero(recsys_statistics.rating_matrix[user_id])
-
+        seen_items_ratings = np.take(recsys_statistics.rating_matrix[user_id], seen_items_id)
+        
         # For each user take all unseen items
         for item_id in u_list:
-            # Calculate similarities to all user seen items
-            similarity_sum = sorted(np.take(recsys_statistics.similarity_matrix[item_id], seen_items_id), key=lambda x: -x)
-            # Predict the rating based on using top-k similar items and normalize it to [0, 1] (divide by k neighbors as we know that similarity is also in [0, 1])
-            rating_matrix_copy[user_id, item_id] = 5.0 * (sum(similarity_sum[:k_neighbors]) / k_neighbors)
+            # Get similarities between item being predicted and all other user's seen items
+            seen_items_similarities = np.take(recsys_statistics.similarity_matrix[item_id], seen_items_id)
+            most_similar_indices = np.argsort(-seen_items_similarities)
+
+            most_similar_similarities = np.take(seen_items_similarities, most_similar_indices)
+            most_similar_ratings = np.take(seen_items_ratings, most_similar_indices)
+
+            # Sum the similarities for top k items
+            similarities_weighted_sum = np.sum(most_similar_similarities[:k_neighbors] * most_similar_ratings[:k_neighbors]) # * 
+
+            # Predict the rating based on using top-k similar items
+            rating_matrix_copy[user_id, item_id] = similarities_weighted_sum / k_neighbors
             
+    original_ratings_nonzero = np.flatnonzero(recsys_statistics.rating_matrix)
+    rating_matrix_copy = norm(rating_matrix_copy, rating_matrix_copy.min(), rating_matrix_copy.max(), 1, 5)
+    np.put(rating_matrix_copy, original_ratings_nonzero, np.take(recsys_statistics.rating_matrix, original_ratings_nonzero))
     return rating_matrix_copy
 
 def get_baseline(args):
-    # print("########### 0. Lightfm recommender ###########")
-    # train, test = lightfm_comparison()
-    
-    # print("########### 1. Baseline with case recommender train and test folds ###########")
-    # ItemKNN(train_fold_path, test_fold_path).compute(verbose=False)
-    # print("########### 2. Baseline with lightm train and test folds ###########")
-    # lightfm_baseline = ItemKNN("lightfm_train.dat", "lightfm_test.dat")
     print(f"########### 3. Baseline with {args.train_fold_path} train fold and {args.test_fold_path} test fold and CUSTOM evaluation ###########")
     baseline = ItemKNN(args.train_fold_path)
     baseline.compute(verbose=False)
@@ -415,15 +495,12 @@ def get_baseline(args):
     data_statistics = test_set_statistics #merge_statistics(train_set_statistics, test_set_statistics)
     custom_evaluate(
         args,
-        normalized_ranking, #trim_total_ranking(normalized_ranking, 50 * args.ranking_size),
+        baseline.ranking, #trim_total_ranking(normalized_ranking, 50 * args.ranking_size),
         recsys_statistics,
         data_statistics,
-        True
+        normalized_ranking
     )
     extended_rating_matrix = extend_rating_matrix(recsys_statistics) #project_ranking_into_rating_matrix(normalized_ranking, recsys_statistics)
-
-
-
     # print("########### 4. Baseline with merged train+test (Case recommender folds) statistics for evaluation ###########")
     # tmp_evaluate(baseline, merge_statistics(train_set_statistics, test_set_statistics))
     # evaluate_precision(baseline.ranking, merge_statistics(train_set_statistics, test_set_statistics))
@@ -516,7 +593,8 @@ def get_baseline(args):
 
     # Return some statistics for the selected basel
 
-    extended_similarity_matrix = np.float32(squareform(pdist(extended_rating_matrix.T, "cosine")))
+    extended_similarity_matrix = np.float32(squareform(pdist(baseline.matrix.T, "cosine")))
+    #extended_similarity_matrix = np.float32(squareform(pdist(extended_rating_matrix.T, "cosine")))
     extended_similarity_matrix[np.isnan(extended_similarity_matrix)] = 1.0
     extended_similarity_matrix = 1.0 - extended_similarity_matrix
 
@@ -535,17 +613,24 @@ def voting_recommendation(args):
     #    rating_matrix[recommender.user_to_user_id[u], recommender.item_to_item_id[i]] = r
     
 
-    normalized_rating_matrix = (filled_rating_matrix - 0.0) / 5.0
+    # Normalize from [1, 5] to [0, 1]
+    filled_rating_matrix = (filled_rating_matrix - 1.0) / 4.0
     objective_factories = [
-        lambda user: rating_based_relevance(user, normalized_rating_matrix),
+        lambda user: rating_based_relevance(user, filled_rating_matrix),
         lambda _: intra_list_diversity(filled_similarity_matrix),
-        lambda _: expected_popularity_complement()
+        lambda _: popularity_complement() #expected_popularity_complement()
     ]
     voting = get_voting_recommender(objective_factories, args)
     print("Starting training of voting recommender")
     recsys_statistics = voting.train(train) # Trains the recommender
     print("Predicting with voting recommender")
-    ranking, per_user_supports = voting.predict_batched(test.users) #voting.predict_batched(list(test.users)[:50]) # Generates ranking for all the users in the test dataset
+
+    def take_users(users, n):
+        if n < 0:
+            return users
+        return set(list(users)[:n])
+
+    ranking, per_user_supports = voting.predict_batched(take_users(test.users, -1)) #voting.predict_batched(list(test.users)[:50]) # Generates ranking for all the users in the test dataset
     # Add ratings to the voting (as estimated by the base recommender) because the ratings in ranking come from a rating matrix which contained only known interactions + those estimated FOR UKNOWN users (i.e. mostly zeros everywhere)
     extended_ranking = []
     for u, i, r in ranking:
@@ -561,10 +646,11 @@ def voting_recommendation(args):
     ranking = extended_ranking
     
     print("Starting evaluation of voting recommender")
-    normalized_ranking = normalize_recommendation_ranking(ranking, 1.0, 5.0)
+    normalized_ranking = ranking #normalize_recommendation_ranking(ranking, 1.0, 5.0)
     data_statistics = test #merge_statistics(train, test)
-    results = custom_evaluate(args, normalized_ranking, recsys_statistics, data_statistics, True)
-    
+    #results = custom_evaluate(args, ranking, recsys_statistics, data_statistics, normalized_ranking)
+    results = custom_evaluate_voting(args, ranking, recsys_statistics, data_statistics, normalized_ranking, voting, filled_rating_matrix, filled_similarity_matrix)
+
     averaged_supports = defaultdict(lambda: dict()) # TODO REMOVE
     for party, values in per_user_supports.items():
         for step, supports in values.items():
@@ -594,7 +680,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_path", type=str, default="/Users/pdokoupil/Downloads/ml-100k/u.data", help="Path to the dataset file")
-    parser.add_argument("--fold_dest", type=str, default="C:/Users/PD/Downloads/ml-100k-folds/lightfmfolds", help="Path to the directory where folds could be stored")
+    parser.add_argument("--fold_dest", type=str, default="C:/Users/PD/Downloads/ml-100k-folds/newlightfmfolds", help="Path to the directory where folds could be stored")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--separator", type=str, default="\t")
     parser.add_argument("--objective_weights", type=str, default="0.33333,0.33333,0.33333", help="Weights of the individual objectives, in format 'x, y, z'")
@@ -605,14 +691,20 @@ def main():
     parser.add_argument("--experiment_name", type=str)
     parser.add_argument("--ranking_size", type=int, default=10)
     parser.add_argument("--output_path_prefix", type=str, default=".") # TODO CHANGE TO /MNT/...
-    parser.add_argument("--enable_normalization", type=bool, default=False) # TODO CHANGE TO FALSE
-    parser.add_argument("--support_function", type=str, default="relative_gain_support_function")
+    parser.add_argument("--support_normalization", type=str, default="standardization", help="which normalization to use, allowed values are {None, standardization, cdf, min_max_scaling}")
+    parser.add_argument("--support_function", type=str, default="normalizing_marginal_gain_support_function")
     args = parser.parse_args()
     args.objective_weights = list(map(float, args.objective_weights.split(",")))
+
+    if not args.experiment_name:
+        args.experiment_name = f"N={args.support_normalization},MA={args.mandate_allocation},W={args.objective_weights},SF={args.support_function}" # Default experiment name
+
     args.mandate_allocation = globals()[args.mandate_allocation] # Get factory/constructor for mandate allocation algorithm
     args.support_function = globals()[args.support_function]
-    if not args.experiment_name:
-        args.experiment_name = f"N={args.enable_normalization},MA={args.mandate_allocation.__name__},W={args.objective_weights},SF={args.support_function.__name__}" # Default experiment name
+    args.support_normalization = globals()[args.support_normalization] if args.support_normalization else None
+
+    if args.support_normalization and args.support_function is not normalizing_marginal_gain_support_function:
+        assert False, f"using support normalization: {args.support_normalization} but not normalizing support function: {args.support_function}"
 
     random.seed(args.seed)
     np.random.seed(args.seed)

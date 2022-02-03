@@ -1,5 +1,4 @@
 from collections import defaultdict
-from email.policy import default
 import itertools
 import random
 
@@ -16,6 +15,8 @@ from contexts.historical_rankings_context import global_historical_rankings_cont
 
 from multiprocessing import Pool
 
+import matplotlib.pyplot as plt
+
 # TODO https://stackoverflow.com/questions/2912231/is-there-a-clever-way-to-pass-the-key-to-defaultdicts-default-factory
 class defaultdict_with_key(defaultdict):
     def __missing__(self, key):
@@ -26,12 +27,13 @@ class defaultdict_with_key(defaultdict):
             return ret
 
 class recommender_system:
-    def __init__(self, voting_function_factory, supports_function_factories, filter_function, mandate_allocator, k, enable_normalization):
+    def __init__(self, voting_function_factory, supports_function_factories, filter_function, mandate_allocator, k, support_normalization_factory):
         self.voting_function_factory = voting_function_factory
         self.supports_function_factories = supports_function_factories
         self.filter_function = filter_function
         self.data_statistics = None
         self.context = global_historical_rankings_context(k)
+        
         self.context.set_objective_names([factory(None).get_name() for factory in supports_function_factories])
         self.candidate_groups = defaultdict(lambda: dict()) # Mapping user to mapping of party name -> candidates
         
@@ -40,7 +42,7 @@ class recommender_system:
         
         self.voting_functions = defaultdict_with_key(lambda user: self.voting_function_factory(user)) # Each user has its own instance
         self.supports_functions = defaultdict_with_key(lambda user: [factory(user) for factory in self.supports_function_factories])
-        self.enable_normalization = enable_normalization
+        self.support_normalization = None if support_normalization_factory is None else {obj_name: support_normalization_factory() for obj_name in self.context.get_objective_names()}
 
     # Adds new objective to the system
     def add_new_objective(self, objective_supports):
@@ -78,14 +80,50 @@ class recommender_system:
         #self.supports_functions = { user: [factory(user) for factory in self.supports_function_factories] for user in data_statistics.users }
         
         statistics = self.measure_call(self._build_recsys_statistics)
-        self.candidate_groups = self.measure_call(self._initialize_candidate_groups, data_statistics)
         
+        #self.candidate_groups = self.measure_call(self._initialize_candidate_groups, data_statistics) # TODO verify not needed
+
+        if self.support_normalization:
+            print("Training support (objective) normalization")
+            self.measure_call(self._train_normalization, data_statistics)
+
         return statistics
 
     def _get_user_unseen_items(self, user, data_statistics):
         if user in data_statistics.items_seen_by_user:
             return data_statistics.items.difference(data_statistics.items_seen_by_user[user])
         return data_statistics.items
+
+    def _train_normalization(self, data_statistics):
+        item_combinations = list(itertools.combinations(data_statistics.items, 2))
+        sampled_users = random.sample(data_statistics.users, 5)
+        
+        num_data_points = len(sampled_users) * len(item_combinations)
+
+        obj_names = self.context.get_objective_names()
+        for obj_idx, obj_name in enumerate(obj_names):
+            values = np.zeros((num_data_points, 1), dtype=np.float32)
+            idx = 0
+            print(f"Calculation for obj: {obj_name}")
+            start_time = time.perf_counter()
+            for user in sampled_users:
+                for combination in item_combinations:
+                    top_k_list = recommendation_list(self.k, list(combination))
+                    values[idx, 0] = self.supports_functions[user][obj_idx].objective(top_k_list, self.context)
+                    idx += 1
+
+            # Normalize the given objective
+            self.support_normalization[obj_name].train(values)
+            print(f"Took: {time.perf_counter() - start_time}")
+
+        
+
+        # Inject the normalization into the support function
+        start_time = time.perf_counter()
+        for obj_idx, obj_name in enumerate(obj_names):
+           for user in data_statistics.users:
+               self.supports_functions[user][obj_idx].set_normalization(self.support_normalization[obj_name])
+        print(f"Setting normalization took: {time.perf_counter() - start_time}")
 
     def _initialize_candidate_groups(self, data_statistics):
         # [0] to skip extremes per party
@@ -201,20 +239,12 @@ class recommender_system:
         #assert result >= new_range[0] and result <= new_range[1], f"New value {result} must fit into the new range: {new_range}"
         return result
 
-    # Normalize candidates from [min, max] to [-1, 1]
-    # Candidates are a list of pairs (item, support)
-    def _normalize_candidates(self, candidates):
-        #min_support = min(candidates, key=lambda x: x[1])[1]
-        #max_support = max(candidates, key=lambda x: x[1])[1]
-        min_support = np.inf
-        max_support = np.NINF
-        for _, support in candidates:
-            if support < min_support:
-                min_support = support
-            if support > max_support:
-                max_support = support
-        return [(item, self._map_range(support, [min_support, max_support], [0.0, 1.0])) for item, support in candidates]
-        
+    def _normalize_candidates(self, candidates, support_normalization):
+        #candidate_items, candidate_supports = zip(*candidates)
+        #support_normalization.train(candidate_supports)
+        #return list(zip(candidate_items, support_normalization.predict_batched(candidate_supports)))
+        return candidates
+
     # Important assumption is that these items do not contain items already seen by the user or already recommended to the user
     def _update_candidate_groups(self, user, items):
         candidate_groups = dict()
@@ -223,8 +253,6 @@ class recommender_system:
             # Each support function will correspond to a single group
             # Each support function should have a name associated with it
             item_support = [(item, support_func(item, self.context)) for item in items] # Get support value for all the items
-            if self.enable_normalization:
-                item_support = self._normalize_candidates(item_support) # TODO turn on/off normalization, possibly merge with filter function to improve performance?
             extremes_per_party[support_func.get_name()]["max"] = max(item_support, key=lambda x: x[1])[1]
             extremes_per_party[support_func.get_name()]["min"] = min(item_support, key=lambda x: x[1])[1]
             candidate_groups[support_func.get_name()] = self.filter_function(item_support) # TODO compare performance with the one below
