@@ -30,17 +30,14 @@ class rating_based_relevance:
         ratings = 0.0
         for item in recommendation_list.items[:m]:
             item_id = context.recsys_statistics.item_to_item_id[item]
-            if rating_row[item_id] > 0:
-                ratings += rating_row[item_id]
-            else:
-                ratings += self.min_rating
+            ratings += rating_row[item_id]
 
-        return ratings / n
+        return ratings #/ n
 
     # Special case when the size of recommendation list is 0
     def _special_case_size_0(self, recommendation_list, context):
         # Take average rating relevance over all items with NON-ZERO relevance
-        return self.avg_rating
+        return 0 #self.avg_rating
 
     def optimized_computation(self, old_recommendation_list, new_item, context, old_recommendation_list_value, cache_extra_value, m=None):
         # Assume that new_recommendation_list = old_recommendation_list + [new_item] and that we have
@@ -55,7 +52,8 @@ class rating_based_relevance:
             rating = self.rating_matrix[:, item_id].mean()
         else:
             rating = self.rating_matrix[user_id, item_id]
-        return ((old_recommendation_list_value * n) + rating) / (n + 1)
+        #return ((old_recommendation_list_value * n) + rating) / (n + 1)
+        return old_recommendation_list_value + rating
 
     def get_name(self):
         return self.__class__.__name__

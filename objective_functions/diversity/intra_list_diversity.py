@@ -26,10 +26,7 @@ class intra_list_diversity:
                 lambda x: 2.0 * (1.0 - self.similarity_matrix[self._get_id(x[0], context), self._get_id(x[1], context)]), # TODO exploit symmetry
                 combinations(recommendation_list.items[:m], 2)
             )
-        ) / (n * (n - 1))
-
-        if div <= 0.0:
-            return self.min_diversity
+        ) / n #(n * (n - 1))
 
         return div
 
@@ -39,9 +36,10 @@ class intra_list_diversity:
     # Special case when the size of recommendation list is 0
     def _special_case_size_0(self, recommendation_list, context):
         # Take average diversity between pair of items (averaged over all pairs)
-        assert self.similarity_matrix.shape[0] == self.similarity_matrix.shape[1]
-        n = self.similarity_matrix.shape[0] * self.similarity_matrix.shape[0] - self.similarity_matrix.shape[0] # Skip the diagonal elements
-        return (1.0 - self.similarity_matrix).sum() / n
+        # assert self.similarity_matrix.shape[0] == self.similarity_matrix.shape[1]
+        # n = self.similarity_matrix.shape[0] * self.similarity_matrix.shape[0] - self.similarity_matrix.shape[0] # Skip the diagonal elements
+        # return (1.0 - self.similarity_matrix).sum() / n
+        return 0
 
     def _special_case_size_1(self, recommendation_list, context):
         # Take average diversity of (recommendation_list[0], item) where item is arbitrary item from the dataset
@@ -75,7 +73,7 @@ class intra_list_diversity:
         for item in old_recommendation_list:
             i_id = self._get_id(item, context)
             s += 2.0 * (1.0 - self.similarity_matrix[i_id, j_id]) # We are exploiting symmetry here
-        return ((old_recommendation_list_value * n * (n - 1)) + s) / ((n + 1) * n)
+        return ((old_recommendation_list_value * n) + s) / (n + 1) #((old_recommendation_list_value * n * (n - 1)) + s) / ((n + 1) * n)
 
     def _get_id(self, x, ctx):
         return ctx.recsys_statistics.item_to_item_id[x]

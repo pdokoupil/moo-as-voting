@@ -174,9 +174,12 @@ def generate_latex_tables(all_results, plot_save_path_prefix):
                 kl_divergences.append(divergence)
             results[method_name] = kl_divergences
 
+            print("Calculating KL-Divergence over normalized values")
             kl_divergences_normalized = [] #Over normalized objective values
             for mer, div, nov in zip(per_user_mer_normalized, per_user_diversity_normalized, per_user_novelty_normalized):
-                normalized_objective_values = normalize_objective_values(globally_max_objective_values_normalized, np.array([mer, div, nov]))
+                assert mer <= 1.0 and div <= 1.0 and nov <= 1.0, f"{mer},{div},{nov}"
+                s = mer + div + nov
+                normalized_objective_values = np.array([mer / s, div / s, nov / s])
                 
                 assert np.all(np.isfinite(normalized_objective_values)), f"Normalized objective values must be finite: {normalized_objective_values}, {globally_max_objective_values_normalized}, {mer}, {div}, {nov}"
                 divergence = kl_divergence(weights, normalized_objective_values)
@@ -243,7 +246,7 @@ def generate_latex_tables(all_results, plot_save_path_prefix):
                 print(results)
                 method_latex_tables += \
 """  \\textbf{%s} &
-        %.3f (%.1f\\%%) | %.3f (%.1f\\%%) & %.3f | %.3f & %.3f | %.3f & %0.3f & %.3f | %.3f \\\\
+        %.3f (%.1f\\%%) \\# %.3f (%.1f\\%%) & %.3f \\# %.3f & %.3f \\# %.3f & %0.3f & %.3f \\# %.3f \\\\
   \\hline"""    % (
                     method_to_method_name[method_name],
                     

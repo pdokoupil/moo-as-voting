@@ -8,6 +8,7 @@ from caserec.utils.cross_validation import CrossValidation
 from objective_functions.diversity.intra_list_diversity import intra_list_diversity
 from recsys.recommendation_list import recommendation_list
 
+import itertools
 
 from scipy.spatial.distance import squareform, pdist
 
@@ -22,9 +23,10 @@ from objective_functions.diversity.expected_intra_list_diversity import expected
 from objective_functions.novelty.expected_popularity_complement import expected_popularity_complement
 from objective_functions.novelty.popularity_complement import popularity_complement
 
-from support_functions.normalization.cdf import cdf
+from support_functions.normalization.cdf import SHIFT, cdf
 from support_functions.normalization.min_max_scaling import min_max_scaling
 from support_functions.normalization.standardization import standardization
+from support_functions.normalization.robust_scaling import robust_scaling
 
 from filter_functions.top_k_filter_function import top_k_filter_function
 from support_functions.marginal_gain_support_function import marginal_gain_support_function
@@ -209,7 +211,7 @@ def custom_evaluate_voting(args, ranking, recsys_statistics,
     
     div = intra_list_diversity(similarity_matrix)
     nov = popularity_complement()
-
+    
     total_novelty = 0.0
     total_diversity = 0.0
     n = 0
@@ -248,21 +250,61 @@ def custom_evaluate_voting(args, ranking, recsys_statistics,
     div_norm = normalizations[intra_list_diversity.__name__]
     nov_norm = normalizations[popularity_complement.__name__]
 
-    normalized_mer = mer_norm.predict(results["mer"])
-    normalized_diversity = div_norm.predict(results["diversity"])
-    normalized_novelty = nov_norm.predict(results["novelty"])
+    normalized_mer = 0.0
+    normalized_diversity = 0.0
+    normalized_novelty = 0.0
     
+    normalized_per_user_mer = []
+    normalized_per_user_diversity = []
+    normalized_per_user_novelty = []
+
+    # Calculate normalized MER per user
+    n = 0
+    for i in range(0, len(ranking), args.ranking_size):
+        top_k_per_user = recommendation_list(ctx.k, [x[1] for x in ranking[i:i+args.ranking_size]])
+        user, _, _ = ranking[i]
+
+        rel = rating_based_relevance(user, rating_matrix)
+        #normalized_per_user_mer.append(mer_norm.predict(np.mean([rel(recommendation_list(ctx.k, [i]), ctx) for i in top_k_per_user.items])) + SHIFT)
+        normalized_per_user_mer.append(np.mean([mer_norm.predict(rel(recommendation_list(ctx.k, [i]), ctx)) for i in top_k_per_user.items]))
+        normalized_mer += normalized_per_user_mer[-1]
+
+        cmbs = list(itertools.combinations(top_k_per_user.items, 2))
+        #normalized_per_user_diversity.append(div_norm.predict(np.mean([div(recommendation_list(ctx.k, [i, j]), ctx) for i, j in cmbs])) + SHIFT)
+        normalized_per_user_diversity.append(np.mean([div_norm.predict(div(recommendation_list(ctx.k, [i, j]), ctx)) for i, j in cmbs]))
+        normalized_diversity += normalized_per_user_diversity[-1]
+
+
+        #normalized_per_user_novelty.append(nov_norm.predict(np.mean([nov(recommendation_list(ctx.k, [i]), ctx) for i in top_k_per_user.items])) + SHIFT)
+        normalized_per_user_novelty.append(np.mean([nov_norm.predict(nov(recommendation_list(ctx.k, [i]), ctx)) for i in top_k_per_user.items]))
+        normalized_novelty += normalized_per_user_novelty[-1]
+
+        n += 1
+
+    normalized_mer /= n
+    normalized_diversity /= n
+    normalized_novelty /= n
+
     print(f"Normalized MER: {normalized_mer}")
     print(f"Normalized DIVERSITY2: {normalized_diversity}")
     print(f"Normalized NOVELTY2: {normalized_novelty}")
-
+    
     results["normalized-mer"] = normalized_mer
     results["normalized-diversity"] = normalized_diversity
     results["normalized-novelty"] = normalized_novelty
     
-    results["normalized-per-user-mer"] = [mer_norm.predict(x) for x in results["per-user-mer"]]
-    results["normalized-per-user-diversity"] = [div_norm.predict(x) for x in results["per-user-diversity"]]
-    results["normalized-per-user-novelty"] = [nov_norm.predict(x) for x in results["per-user-novelty"]]
+    #results["normalized-per-user-mer"] = [np.mean(list(map(lambda x: mer_norm.predict(x[2]), normalized_ranking[i:i+args.ranking_size]))) for i in range(0, len(normalized_ranking), args.ranking_size)]
+    #results["normalized-per-user-diversity"] = [div_norm.predict(x) for x in results["per-user-diversity"]]
+    #results["normalized-per-user-novelty"] = [nov_norm.predict(x) for x in results["per-user-novelty"]]
+    results["normalized-per-user-mer"] = normalized_per_user_mer
+    results["normalized-per-user-diversity"] = normalized_per_user_diversity
+    results["normalized-per-user-novelty"] = normalized_per_user_novelty
+
+    # Print sum-to-1 results
+    s = normalized_mer + normalized_diversity + normalized_novelty
+    print(f"Sum-To-1 Normalized MER: {normalized_mer / s}")
+    print(f"Sum-To-1 Normalized DIVERSITY2: {normalized_diversity / s}")
+    print(f"Sum-To-1 Normalized NOVELTY2: {normalized_novelty / s}")
 
     return results
 
@@ -345,7 +387,7 @@ def tmp_evaluate(baseline, dataset):
     n = 0
     for user in dataset.users:
         ranking = baseline.predict_scores(user, user - 1)
-        prec += _precision_at_k(ranking, dataset, 5)
+        prec += _precision_at_k(ranking, dataset, -1)
         n += 1
     print(f"Precision@{5} = {prec / n}")
 
@@ -683,7 +725,7 @@ def main():
     parser.add_argument("--fold_dest", type=str, default="C:/Users/PD/Downloads/ml-100k-folds/newlightfmfolds", help="Path to the directory where folds could be stored")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--separator", type=str, default="\t")
-    parser.add_argument("--objective_weights", type=str, default="0.33333,0.33333,0.33333", help="Weights of the individual objectives, in format 'x, y, z'")
+    parser.add_argument("--objective_weights", type=str, default="0.5,0.25,0.25", help="Weights of the individual objectives, in format 'x, y, z'")
     parser.add_argument(
         "--mandate_allocation", type=str, default="exactly_proportional_fuzzy_dhondt_2",
         help="allowed values are {exactly_proportional_fuzzy_dhondt, exactly_proportional_fuzzy_dhondt_2, fai_strategy, random_mandate_allocation, sainte_lague_method, exactly_proportional_fai_strategy}"
@@ -691,7 +733,7 @@ def main():
     parser.add_argument("--experiment_name", type=str)
     parser.add_argument("--ranking_size", type=int, default=10)
     parser.add_argument("--output_path_prefix", type=str, default=".") # TODO CHANGE TO /MNT/...
-    parser.add_argument("--support_normalization", type=str, default="standardization", help="which normalization to use, allowed values are {None, standardization, cdf, min_max_scaling}")
+    parser.add_argument("--support_normalization", type=str, default="cdf", help="which normalization to use, allowed values are {None, standardization, cdf, min_max_scaling}")
     parser.add_argument("--support_function", type=str, default="normalizing_marginal_gain_support_function")
     args = parser.parse_args()
     args.objective_weights = list(map(float, args.objective_weights.split(",")))

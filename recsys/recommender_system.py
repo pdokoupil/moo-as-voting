@@ -7,6 +7,7 @@ import numpy as np
 import time
 
 from scipy.spatial.distance import squareform, pdist
+from objective_functions.diversity.intra_list_diversity import intra_list_diversity
 from recsys.dataset_statistics import dataset_statistics
 
 from recsys.recommendation_list import recommendation_list
@@ -95,34 +96,64 @@ class recommender_system:
         return data_statistics.items
 
     def _train_normalization(self, data_statistics):
-        item_combinations = list(itertools.combinations(data_statistics.items, 2))
-        sampled_users = random.sample(data_statistics.users, 5)
+        item_combinations = list(itertools.combinations(data_statistics.items, 1))
+        item_pair_combinations = list(itertools.combinations(data_statistics.items, 2))
+        sampled_users = random.sample(data_statistics.users, len(data_statistics.users))
         
-        num_data_points = len(sampled_users) * len(item_combinations)
-
         obj_names = self.context.get_objective_names()
+        
+        objectives = {}
+        
         for obj_idx, obj_name in enumerate(obj_names):
-            values = np.zeros((num_data_points, 1), dtype=np.float32)
-            idx = 0
-            print(f"Calculation for obj: {obj_name}")
-            start_time = time.perf_counter()
-            for user in sampled_users:
-                for combination in item_combinations:
-                    top_k_list = recommendation_list(self.k, list(combination))
-                    values[idx, 0] = self.supports_functions[user][obj_idx].objective(top_k_list, self.context)
-                    idx += 1
+            objectives[obj_name] = (obj_idx, self.supports_functions[sampled_users[0]][obj_idx].objective)
 
-            # Normalize the given objective
-            self.support_normalization[obj_name].train(values)
-            print(f"Took: {time.perf_counter() - start_time}")
+        for obj_name, (obj_idx, obj) in objectives.items():
+            start_time = time.perf_counter()
+            if hasattr(obj, "user"): # depends on user
+                self.support_normalization[obj_name].train(
+                    sampled_users,
+                    item_combinations,
+                    lambda user, obj_idx=obj_idx: self.supports_functions[user][obj_idx].objective,
+                    self.context
+                )
+            elif type(obj) is intra_list_diversity:
+                print("Diversity")
+                self.support_normalization[obj_name].train({}, item_pair_combinations, obj, self.context)
+            else:
+                print("Other than diversity")
+                self.support_normalization[obj_name].train({}, item_combinations, obj, self.context)
+            print(f"Obj: {obj_name} took: {time.perf_counter() - start_time}")
+
+        # for obj_idx, obj_name in enumerate(obj_names):
+        #     values = np.zeros((num_data_points, 1), dtype=np.float32)
+        #     idx = 0
+        #     print(f"Calculation for obj: {obj_name}")
+        #     start_time = time.perf_counter()
+        #     for user in sampled_users:
+        #         for combination in item_combinations:
+        #             top_k_list = recommendation_list(self.k, list(combination))
+        #             values[idx, 0] = self.supports_functions[user][obj_idx].objective(top_k_list, self.context)
+        #             idx += 1
+
+        #     # Normalize the given objective
+        #     self.support_normalization[obj_name].train(values)
+        #     print(f"Took: {time.perf_counter() - start_time}")
 
         
 
         # Inject the normalization into the support function
         start_time = time.perf_counter()
-        for obj_idx, obj_name in enumerate(obj_names):
-           for user in data_statistics.users:
-               self.supports_functions[user][obj_idx].set_normalization(self.support_normalization[obj_name])
+        # for obj_idx, obj_name in enumerate(obj_names):
+        #    for user in data_statistics.users:
+        #        self.supports_functions[user][obj_idx].set_normalization(self.support_normalization[obj_name])
+        for user in data_statistics.users:
+            for support_normalization, support_function in zip(self.support_normalization.values(), self.supports_functions[user]):
+                support_function.set_normalization(support_normalization) 
+
+        # for _, support_functions in self.supports_functions.items():
+        #     for support_normalization, support_function in zip(self.support_normalization.values(), support_functions):
+        #         support_function.set_normalization(support_normalization)
+
         print(f"Setting normalization took: {time.perf_counter() - start_time}")
 
     def _initialize_candidate_groups(self, data_statistics):

@@ -57,7 +57,7 @@ class exactly_proportional_fuzzy_dhondt_2:
                 elif unused_p <= 0 and sup <= 0:
                     gain_items[candidate] += min(0, sup - unused_p)
                 elif unused_p <= 0 and sup >= 0:
-                    gain_items[candidate] += min(sup, unused_p)
+                    gain_items[candidate] += max(0, min(sup, unused_p)) #min(sup, unused_p)
                 elif unused_p >= 0 and sup <= 0:
                     gain_items[candidate] += min(0, sup - unused_p)
                 else:
@@ -68,7 +68,8 @@ class exactly_proportional_fuzzy_dhondt_2:
         self.tot = 0.0
         for p, s in self.s_r.items():
             self.s_r[p] = s + support_towards_party(max_gain_item, p)
-            self.tot += self.s_r[p]
+            #self.tot += self.s_r[p]
+            self.tot = max(self.tot, self.tot + self.s_r[p])
 
         supports = dict()
         for party_name, candidates in candidate_groups.items():
