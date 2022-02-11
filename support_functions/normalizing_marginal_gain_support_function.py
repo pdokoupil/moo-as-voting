@@ -32,11 +32,11 @@ class normalizing_marginal_gain_support_function:
         # TODO mention optimization
         if hasattr(self.objective, "optimized_computation"):
             new_obj = self.objective.optimized_computation(recsys_list, item, context, self.cache_value, self.cache_extra_value)
-            return self.normalization.predict(new_obj - self.cache_value)
+            return self.normalization.predict(new_obj - self.cache_value, self.user)
         
         # Return obj(list + item) - obj(list)
         new_obj = self._get_obj_value(self.objective(recsys_list.with_extra_item(item), context))
-        return self.normalization.predict(new_obj - self.cache_value)
+        return self.normalization.predict(new_obj - self.cache_value, self.user)
 
     def _get_obj_value(self, obj_result):
         if isinstance(obj_result, tuple):

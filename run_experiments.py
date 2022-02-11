@@ -1,3 +1,5 @@
+from flask import g
+from sklearn.metrics import mean_absolute_error
 from main import *
 import itertools
 import numpy as np
@@ -73,7 +75,7 @@ def get_arguments():
         yield dummy_args(seed=SEED, train_fold_path=train_fold_path, test_fold_path=test_fold_path,
             objective_weights=weights, mandate_allocation=method,
             ranking_size=RANKING_SIZE, experiment_name=name, support_function=normalizing_marginal_gain_support_function,
-            support_normalization=cdf
+            support_normalization=standardization
         )
 
 def generate_latex_tables(all_results, plot_save_path_prefix):
@@ -176,11 +178,17 @@ def generate_latex_tables(all_results, plot_save_path_prefix):
 
             print("Calculating KL-Divergence over normalized values")
             kl_divergences_normalized = [] #Over normalized objective values
+            c = 0
             for mer, div, nov in zip(per_user_mer_normalized, per_user_diversity_normalized, per_user_novelty_normalized):
-                assert mer <= 1.0 and div <= 1.0 and nov <= 1.0, f"{mer},{div},{nov}"
-                s = mer + div + nov
-                normalized_objective_values = np.array([mer / s, div / s, nov / s])
-                
+                #assert mer <= 1.0 and mer >= 0.0 and div <= 1.0 and div >= 0.0 and nov <= 1.0 and nov >= 0.0, f"{mer},{div},{nov}"
+                objs = np.array([mer, div, nov])
+                if np.any(objs <= 0):
+                    print(f"Warning: objs={objs} contains something non-positive")
+                    objs[objs <= 0] = 1e-6
+                    print(f"Replaced with epsilon: {objs}")
+                    c += 1
+                objs = objs / objs.sum()
+
                 assert np.all(np.isfinite(normalized_objective_values)), f"Normalized objective values must be finite: {normalized_objective_values}, {globally_max_objective_values_normalized}, {mer}, {div}, {nov}"
                 divergence = kl_divergence(weights, normalized_objective_values)
                 print(f"KL-Divergence: {divergence}\n\n")
@@ -188,7 +196,35 @@ def generate_latex_tables(all_results, plot_save_path_prefix):
                 kl_divergences_normalized.append(divergence)
             results_normalized[method_name] = kl_divergences_normalized
 
+            print(f"Warning: negative values found for {c} users, out of {len(per_user_mer_normalized)} ({(c / len(per_user_mer_normalized)) * 100} %)")
+
         return results, results_normalized
+
+    def calculate_per_user_errors(weights, rest_results):
+        weights = np.array(weights)
+        mean_absolute_errors = dict()
+        mean_errors = dict()
+        for method_name in rest_results.keys():
+            per_user_mer_normalized = rest_results[method_name]["L"]["normalized-per-user-mer"]
+            per_user_diversity_normalized = rest_results[method_name]["L"]["normalized-per-user-diversity"]
+            per_user_novelty_normalized = rest_results[method_name]["L"]["normalized-per-user-novelty"]
+            
+            errors = []
+            absolute_errors = []
+            for mer, div, nov in zip(per_user_mer_normalized, per_user_diversity_normalized, per_user_novelty_normalized):
+                # Normalize to 1 sum
+                objs = np.array([mer, div, nov])
+                objs[objs <= 0] = 1e-6
+                objs = objs / objs.sum()
+
+                absolute_errors.append(np.abs(objs - weights).mean())
+                errors.append(objs - weights)
+
+            mean_absolute_errors[method_name] = absolute_errors
+            mean_errors[method_name] = errors
+
+        return mean_absolute_errors, mean_errors
+
 
     for weights, rest_results in groupped_results.items():
         if len(latex_tables) > 0:
@@ -197,6 +233,10 @@ def generate_latex_tables(all_results, plot_save_path_prefix):
         per_user_kl_divergence, per_user_kl_divergence_normalized = calculate_per_user_kl_divergence(weights, rest_results)
         mean_kl_divergence = {method_name: np.mean(results) for method_name, results in per_user_kl_divergence.items()}
         mean_kl_divergence_normalized = {method_name: np.mean(results) for method_name, results in per_user_kl_divergence_normalized.items()}
+
+        per_user_mean_absolute_error, per_user_error = calculate_per_user_errors(weights, rest_results)
+        mean_absolute_error = {method_name: np.mean(results) for method_name, results in per_user_mean_absolute_error.items()}
+        mean_error = {method_name: np.mean(results, axis=0) for method_name, results in per_user_error.items()}
         
         # Create and save plot
         data = []
@@ -246,7 +286,7 @@ def generate_latex_tables(all_results, plot_save_path_prefix):
                 print(results)
                 method_latex_tables += \
 """  \\textbf{%s} &
-        %.3f (%.1f\\%%) \\# %.3f (%.1f\\%%) & %.3f \\# %.3f & %.3f \\# %.3f & %0.3f & %.3f \\# %.3f \\\\
+        %.3f (%.1f\\%%) \\# %.3f (%.1f\\%%) & %.3f \\# %.3f & %.3f \\# %.3f & %0.3f & %.3f \\# %.3f & %.3f (%s) \\\\
   \\hline"""    % (
                     method_to_method_name[method_name],
                     
@@ -265,15 +305,18 @@ def generate_latex_tables(all_results, plot_save_path_prefix):
                     results["map"],
 
                     mean_kl_divergence[method_name],
-                    mean_kl_divergence_normalized[method_name]
+                    mean_kl_divergence_normalized[method_name],
+
+                    mean_absolute_error[method_name],
+                    [round(x, 3) for x in mean_error[method_name]]
                 )
                 
 
         latex_tables += """%% [%.3f, %.3f, %.3f]
 \\begin{center}
-\\begin{tabular}{ | c | c | c | c | c | c | } 
+\\begin{tabular}{ | c | c | c | c | c | c | c | } 
   \\hline
-  \\textit{Method} & \\textbf{MER} & \\textbf{Diversity} & \\textbf{Novelty} & \\textbf{MAP} & \\textbf{KL} \\\\ 
+  \\textit{Method} & \\textbf{MER} & \\textbf{Diversity} & \\textbf{Novelty} & \\textbf{MAP} & \\textbf{KL} & \\textbf{E} \\\\ 
   \\hline
 %s
  \\multicolumn{6}{| c |}{\\textbf{Weights} [%.3f, %.3f, %.3f]}\\\\

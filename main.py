@@ -265,18 +265,18 @@ def custom_evaluate_voting(args, ranking, recsys_statistics,
         user, _, _ = ranking[i]
 
         rel = rating_based_relevance(user, rating_matrix)
-        #normalized_per_user_mer.append(mer_norm.predict(np.mean([rel(recommendation_list(ctx.k, [i]), ctx) for i in top_k_per_user.items])) + SHIFT)
-        normalized_per_user_mer.append(np.mean([mer_norm.predict(rel(recommendation_list(ctx.k, [i]), ctx)) for i in top_k_per_user.items]))
+        normalized_per_user_mer.append(mer_norm.predict(np.mean([rel(recommendation_list(ctx.k, [i]), ctx) for i in top_k_per_user.items]), user))
+        #normalized_per_user_mer.append(np.mean([mer_norm.predict(rel(recommendation_list(ctx.k, [i]), ctx)) for i in top_k_per_user.items]))
         normalized_mer += normalized_per_user_mer[-1]
 
         cmbs = list(itertools.combinations(top_k_per_user.items, 2))
-        #normalized_per_user_diversity.append(div_norm.predict(np.mean([div(recommendation_list(ctx.k, [i, j]), ctx) for i, j in cmbs])) + SHIFT)
-        normalized_per_user_diversity.append(np.mean([div_norm.predict(div(recommendation_list(ctx.k, [i, j]), ctx)) for i, j in cmbs]))
+        normalized_per_user_diversity.append(div_norm.predict(np.mean([div(recommendation_list(ctx.k, [i, j]), ctx) for i, j in cmbs]), user))
+        #normalized_per_user_diversity.append(np.mean([div_norm.predict(div(recommendation_list(ctx.k, [i, j]), ctx)) for i, j in cmbs]))
         normalized_diversity += normalized_per_user_diversity[-1]
 
 
-        #normalized_per_user_novelty.append(nov_norm.predict(np.mean([nov(recommendation_list(ctx.k, [i]), ctx) for i in top_k_per_user.items])) + SHIFT)
-        normalized_per_user_novelty.append(np.mean([nov_norm.predict(nov(recommendation_list(ctx.k, [i]), ctx)) for i in top_k_per_user.items]))
+        normalized_per_user_novelty.append(nov_norm.predict(np.mean([nov(recommendation_list(ctx.k, [i]), ctx) for i in top_k_per_user.items]), user))
+        #normalized_per_user_novelty.append(np.mean([nov_norm.predict(nov(recommendation_list(ctx.k, [i]), ctx)) for i in top_k_per_user.items]))
         normalized_novelty += normalized_per_user_novelty[-1]
 
         n += 1
@@ -299,6 +299,35 @@ def custom_evaluate_voting(args, ranking, recsys_statistics,
     results["normalized-per-user-mer"] = normalized_per_user_mer
     results["normalized-per-user-diversity"] = normalized_per_user_diversity
     results["normalized-per-user-novelty"] = normalized_per_user_novelty
+
+    # Plot histogram of normalized, per-user, sum-to-1 objectives
+    normalized_sum_to_one_per_user_mer = []
+    normalized_sum_to_one_per_user_diversity = []
+    normalized_sum_to_one_per_user_novelty = []
+    for mer, div, nov in zip(normalized_per_user_mer, normalized_per_user_diversity, normalized_per_user_novelty):
+        s = np.abs(mer) + np.abs(div) + np.abs(nov)
+        normalized_sum_to_one_per_user_mer.append(mer / s)
+        normalized_sum_to_one_per_user_diversity.append(div / s)
+        normalized_sum_to_one_per_user_novelty.append(nov / s)
+
+    plt.hist(normalized_sum_to_one_per_user_mer)
+    plt.title(f"Normalized, sum-to-one, per-user MER")
+    plt.tight_layout()
+    plt.savefig(os.path.join(args.output_path_prefix, f"mer_hist_{args.experiment_name}.png"))
+    plt.close()
+
+    plt.hist(normalized_sum_to_one_per_user_diversity)
+    plt.title(f"Normalized, sum-to-one, per-user Diversity")
+    plt.tight_layout()
+    plt.savefig(os.path.join(args.output_path_prefix, f"div_hist_{args.experiment_name}.png"))
+    plt.close()
+
+    plt.hist(normalized_sum_to_one_per_user_novelty)
+    plt.title(f"Normalized, sum-to-one, per-user Novelty")
+    plt.tight_layout()
+    plt.savefig(os.path.join(args.output_path_prefix, f"nov_hist_{args.experiment_name}.png"))
+    plt.close()
+
 
     # Print sum-to-1 results
     s = normalized_mer + normalized_diversity + normalized_novelty
