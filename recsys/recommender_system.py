@@ -1,10 +1,12 @@
 from collections import defaultdict
 import itertools
+import pickle
 import random
 
 import numpy as np
 
 import time
+import os
 
 from scipy.spatial.distance import squareform, pdist
 from objective_functions.diversity.intra_list_diversity import intra_list_diversity
@@ -18,6 +20,8 @@ from multiprocessing import Pool
 
 import matplotlib.pyplot as plt
 
+from support_functions.normalizing_marginal_gain_support_function import normalizing_marginal_gain_support_function
+
 # TODO https://stackoverflow.com/questions/2912231/is-there-a-clever-way-to-pass-the-key-to-defaultdicts-default-factory
 class defaultdict_with_key(defaultdict):
     def __missing__(self, key):
@@ -28,7 +32,7 @@ class defaultdict_with_key(defaultdict):
             return ret
 
 class recommender_system:
-    def __init__(self, voting_function_factory, supports_function_factories, filter_function, mandate_allocator, k, support_normalization_factory):
+    def __init__(self, voting_function_factory, supports_function_factories, filter_function, mandate_allocator, k, support_normalization_factory, shift, cache_dir, baseline_name):
         self.voting_function_factory = voting_function_factory
         self.supports_function_factories = supports_function_factories
         self.filter_function = filter_function
@@ -43,7 +47,15 @@ class recommender_system:
         
         self.voting_functions = defaultdict_with_key(lambda user: self.voting_function_factory(user)) # Each user has its own instance
         self.supports_functions = defaultdict_with_key(lambda user: [factory(user) for factory in self.supports_function_factories])
-        self.support_normalization = None if support_normalization_factory is None else {obj_name: support_normalization_factory() for obj_name in self.context.get_objective_names()}
+        self.support_normalization = None if support_normalization_factory is None \
+                                          else {
+                                              obj_name: support_normalization_factory(
+                                                  shift,
+                                                  os.path.join(cache_dir, f"{support_normalization_factory.__name__}_{obj_name}_{baseline_name}.pckl"),
+                                                ) for obj_name in self.context.get_objective_names()
+                                            }
+
+        self.recsys_statistics_cache_path = os.path.join(cache_dir, "recsys_statistics.pckl")
 
     # Adds new objective to the system
     def add_new_objective(self, objective_supports):
@@ -60,16 +72,20 @@ class recommender_system:
         votes = self.voting_functions[user](self.context)
         mandates = []
         per_user_support = dict() # TODO REMOVE maps step for i=1,..,k to support for this given user
+        extremes_per_party = dict()
         for i in range(self.k):
             # Before getting first candidate in order to solve situation where feedback was received (thus candidates update is needed) prior to getting first recommendation
             #self.candidate_groups[user] = self.measure_call(self._update_candidate_groups, user, self.data_statistics.items.difference(mandates))
+            
             self.candidate_groups[user], extremes_per_party = self._update_candidate_groups(user, self._get_user_unseen_items(user, self.data_statistics).difference(mandates))
+            #self.candidate_groups[user], extremes_per_party = self._update_candidate_groups_fast(user, self._get_user_unseen_items(user, self.data_statistics), mandates, extremes_per_party)
+            
             #item = self.measure_call(self.mandate_allocator, self.candidate_groups[user], votes, mandates, self.k)
             item, item_support = self.mandate_allocator(self.candidate_groups[user], votes, mandates, self.k, extremes_per_party)
             per_user_support[i] = item_support # TODO REMOVE
             mandates.append(item)
             self.context.on_item_recommended(item, user)
-        
+
         result = recommendation_list(self.k, mandates)
         self.context.on_list_recommended(result, user)
         return result, per_user_support
@@ -108,6 +124,7 @@ class recommender_system:
             objectives[obj_name] = (obj_idx, self.supports_functions[sampled_users[0]][obj_idx].objective)
 
         for obj_name, (obj_idx, obj) in objectives.items():
+            print(f"Training {obj_name}")
             start_time = time.perf_counter()
             if hasattr(obj, "user"): # depends on user
                 self.support_normalization[obj_name].train(
@@ -124,35 +141,14 @@ class recommender_system:
                 self.support_normalization[obj_name].train({}, item_combinations, obj, self.context)
             print(f"Obj: {obj_name} took: {time.perf_counter() - start_time}")
 
-        # for obj_idx, obj_name in enumerate(obj_names):
-        #     values = np.zeros((num_data_points, 1), dtype=np.float32)
-        #     idx = 0
-        #     print(f"Calculation for obj: {obj_name}")
-        #     start_time = time.perf_counter()
-        #     for user in sampled_users:
-        #         for combination in item_combinations:
-        #             top_k_list = recommendation_list(self.k, list(combination))
-        #             values[idx, 0] = self.supports_functions[user][obj_idx].objective(top_k_list, self.context)
-        #             idx += 1
+        self._set_normalization(data_statistics.users)
 
-        #     # Normalize the given objective
-        #     self.support_normalization[obj_name].train(values)
-        #     print(f"Took: {time.perf_counter() - start_time}")
-
-        
-
+    def _set_normalization(self, users):
         # Inject the normalization into the support function
         start_time = time.perf_counter()
-        # for obj_idx, obj_name in enumerate(obj_names):
-        #    for user in data_statistics.users:
-        #        self.supports_functions[user][obj_idx].set_normalization(self.support_normalization[obj_name])
-        for user in data_statistics.users:
+        for user in users:
             for support_normalization, support_function in zip(self.support_normalization.values(), self.supports_functions[user]):
-                support_function.set_normalization(support_normalization) 
-
-        # for _, support_functions in self.supports_functions.items():
-        #     for support_normalization, support_function in zip(self.support_normalization.values(), support_functions):
-        #         support_function.set_normalization(support_normalization)
+                support_function.set_normalization(support_normalization)
 
         print(f"Setting normalization took: {time.perf_counter() - start_time}")
 
@@ -172,11 +168,22 @@ class recommender_system:
         return result
 
     def _build_recsys_statistics(self):
-        item_to_item_id = self.measure_call(self._build_item_mapping)
-        user_to_user_id = self.measure_call(self._build_user_mapping)
-        rating_matrix = self.measure_call(self._build_rating_matrix, user_to_user_id, item_to_item_id)
-        similarity_matrix = self.measure_call(self._build_similarity_matrix, np.transpose(rating_matrix))
-        statistics = self.measure_call(recommender_statistics, rating_matrix, similarity_matrix, user_to_user_id, item_to_item_id)
+        statistics = None
+        if os.path.exists(self.recsys_statistics_cache_path):
+            with open(self.recsys_statistics_cache_path, 'rb') as f:
+                print(f"Loading recsys statistics from: {self.recsys_statistics_cache_path}")
+                statistics = pickle.load(f)
+        else:
+            item_to_item_id = self.measure_call(self._build_item_mapping)
+            user_to_user_id = self.measure_call(self._build_user_mapping)
+            rating_matrix = self.measure_call(self._build_rating_matrix, user_to_user_id, item_to_item_id)
+            similarity_matrix = self.measure_call(self._build_similarity_matrix, np.transpose(rating_matrix))
+            statistics = self.measure_call(recommender_statistics, rating_matrix, similarity_matrix, user_to_user_id, item_to_item_id)
+
+            with open(self.recsys_statistics_cache_path, 'wb') as f:
+                print(f"Saving recsys statistics to: {self.recsys_statistics_cache_path}")
+                pickle.dump(statistics, f)
+        
         self.context.set_recsys_statistics(statistics)
         return statistics
 
@@ -223,6 +230,8 @@ class recommender_system:
         return mapping
 
     def predict_batched(self, users):
+        self._set_normalization(users) # Set normalization for previously unknown users
+
         ranking = []
         start_time = time.perf_counter()
         per_user_supports = defaultdict(lambda: defaultdict(lambda: list())) # TODO REMOVE
@@ -281,14 +290,34 @@ class recommender_system:
         candidate_groups = dict()
         extremes_per_party = defaultdict(dict)
         for support_func in self.supports_functions[user]:
+            sup_name = support_func.get_name()
             # Each support function will correspond to a single group
             # Each support function should have a name associated with it
             item_support = [(item, support_func(item, self.context)) for item in items] # Get support value for all the items
-            extremes_per_party[support_func.get_name()]["max"] = max(item_support, key=lambda x: x[1])[1]
-            extremes_per_party[support_func.get_name()]["min"] = min(item_support, key=lambda x: x[1])[1]
-            candidate_groups[support_func.get_name()] = self.filter_function(item_support) # TODO compare performance with the one below
+            extremes_per_party[sup_name]["max"] = max(item_support, key=lambda x: x[1])[1]
+            extremes_per_party[sup_name]["min"] = min(item_support, key=lambda x: x[1])[1]
+            candidate_groups[sup_name] = self.filter_function(item_support) # TODO compare performance with the one below
             # candidate_groups[support_func.get_name()] = self.filter_function({ item: support_func(item, self.context) for item in items}.items()) 
         return candidate_groups, extremes_per_party
+
+    # TODO: this decreases generality of the algorithm
+    def _update_candidate_groups_fast(self, user, items, mandates, extremes_per_party):
+        candidate_groups = dict()
+        if user in self.candidate_groups:
+            for support_func in self.supports_functions[user]:
+                sup_name = support_func.get_name()
+                # if len(mandates) > 0 and mandates[-1] in self.candidate_groups[user][sup_name]:
+                #     del self.candidate_groups[user][sup_name][mandates[-1]]
+                if sup_name == "intra_list_diversity":
+                    item_support = [(item, support_func(item, self.context)) for item in items.difference(mandates)] # Get support value for all the items
+                    extremes_per_party[sup_name]["max"] = max(item_support, key=lambda x: x[1])[1]
+                    extremes_per_party[sup_name]["min"] = min(item_support, key=lambda x: x[1])[1]
+                    candidate_groups[sup_name] = self.filter_function(item_support)
+                else:
+                    candidate_groups[sup_name] = self.candidate_groups[user][sup_name]
+            return candidate_groups, extremes_per_party
+        else:
+            return self._update_candidate_groups(user, items.difference(mandates))
 
     def _update_context_with_feedback(self, feedback):
         pass

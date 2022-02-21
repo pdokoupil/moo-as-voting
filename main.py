@@ -1,11 +1,14 @@
 import argparse
 from collections import defaultdict
+from email.policy import default
 import os
 from time import perf_counter
 
 from caserec.recommenders.item_recommendation.itemknn import ItemKNN
 from caserec.utils.cross_validation import CrossValidation
 from objective_functions.diversity.intra_list_diversity import intra_list_diversity
+from objective_functions.novelty.discounted_popularity_complement import discounted_popularity_complement
+from objective_functions.relevance.discounted_rating_based_relevance import discounted_rating_based_relevance
 from recsys.recommendation_list import recommendation_list
 
 import itertools
@@ -18,12 +21,15 @@ from recsys.recommender_statistics import recommender_statistics
 from objective_functions.relevance.average_precision import average_precision
 from objective_functions.relevance.mean_average_precision import mean_average_precision
 from objective_functions.relevance.rating_based_relevance import rating_based_relevance
+from objective_functions.relevance.discounted_rating_based_relevance import discounted_rating_based_relevance
 from objective_functions.relevance.precision import precision
 from objective_functions.diversity.expected_intra_list_diversity import expected_intra_list_diversity
 from objective_functions.novelty.expected_popularity_complement import expected_popularity_complement
 from objective_functions.novelty.popularity_complement import popularity_complement
+from objective_functions.novelty.discounted_popularity_complement import discounted_popularity_complement
+from objective_functions.diversity.content_based_diversity import content_based_diversity
 
-from support_functions.normalization.cdf import SHIFT, cdf
+from support_functions.normalization.cdf import cdf
 from support_functions.normalization.min_max_scaling import min_max_scaling
 from support_functions.normalization.standardization import standardization
 from support_functions.normalization.robust_scaling import robust_scaling
@@ -34,16 +40,23 @@ from support_functions.normalizing_marginal_gain_support_function import normali
 from support_functions.relative_gain_support_function import relative_gain_support_function
 from voting_functions.constant_voting_function import constant_voting_function
 from voting_functions.uniform_voting_function import uniform_voting_function
+
 from mandate_allocation.sainte_lague_method import sainte_lague_method
 from mandate_allocation.fai_strategy import fai_strategy
 from mandate_allocation.exactly_proportional_fuzzy_dhondt import exactly_proportional_fuzzy_dhondt
 from mandate_allocation.exactly_proportional_fuzzy_dhondt_2 import exactly_proportional_fuzzy_dhondt_2
 from mandate_allocation.exactly_proportional_fai_strategy import exactly_proportional_fai_strategy
 from mandate_allocation.random_mandate_allocation import random_mandate_allocation
+from mandate_allocation.probabilistic_fai_strategy import probabilistic_fai_strategy
+from mandate_allocation.weighted_average_strategy import weighted_average_strategy
+
+from caserec.recommenders.item_recommendation.base_item_recommendation import BaseItemRecommendation
+from caserec.recommenders.rating_prediction.base_rating_prediction import BaseRatingPrediction
 
 import random
 
 import math
+import pickle
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -55,6 +68,10 @@ from caserec.recommenders.rating_prediction.userknn import UserKNN as RatingUser
 from caserec.utils.process_data import ReadFile, WriteFile
 from caserec.evaluation.rating_prediction import RatingPredictionEvaluation
 from caserec.recommenders.rating_prediction.svd import SVD
+from caserec.recommenders.rating_prediction.matrixfactorization import MatrixFactorization
+
+RATING_BASED_RELEVANCE_DISCOUNT = 0.85
+POPULARITY_COMPLEMENT_DISCOUNT = 0.85
 
 def calculate_diversity(top_k, recsys_statistics):
     d = 0.0
@@ -205,12 +222,25 @@ def custom_evaluate(args, ranking, recsys_statistics, test_dataset_statistics, n
 
 def custom_evaluate_voting(args, ranking, recsys_statistics,
     test_dataset_statistics, normalized_ranking,
-    voting_recommender, rating_matrix, similarity_matrix):
+    voting_recommender, rating_matrix, similarity_matrix, metadata):
     ctx = voting_recommender.context
     results = custom_evaluate(args, ranking, recsys_statistics, test_dataset_statistics, normalized_ranking)
     
-    div = intra_list_diversity(similarity_matrix)
-    nov = popularity_complement()
+    print("Custom evluate voting")
+
+    if args.use_cb_diversity:
+        print("Using CB diversity in custom_evaluate_voting")
+        div = content_based_diversity(metadata)
+    else:
+        print("Using Col diversity in custom_evaluate_voting")
+        div = intra_list_diversity(1.0 - similarity_matrix)
+    
+    if args.use_discounting:
+        print("Using discounted popularity complement")
+        nov = discounted_popularity_complement(POPULARITY_COMPLEMENT_DISCOUNT)
+    else:
+        print("Using non-discounted popularity complement")
+        nov = popularity_complement()
     
     total_novelty = 0.0
     total_diversity = 0.0
@@ -246,9 +276,23 @@ def custom_evaluate_voting(args, ranking, recsys_statistics,
     print("-------------------")
     normalizations = voting_recommender.support_normalization
 
-    mer_norm = normalizations[rating_based_relevance.__name__]
-    div_norm = normalizations[intra_list_diversity.__name__]
-    nov_norm = normalizations[popularity_complement.__name__]
+    if args.use_discounting:
+        print("Using discounted normalizations")
+        mer_norm = normalizations[discounted_rating_based_relevance.__name__]
+        nov_norm = normalizations[discounted_popularity_complement.__name__]
+    else:
+        print("Using non-discounted normalization")
+        mer_norm = normalizations[rating_based_relevance.__name__]
+        nov_norm = normalizations[popularity_complement.__name__]
+
+    if args.use_cb_diversity:
+        print("Using CB Diversity normalization")
+        div_norm = normalizations[content_based_diversity.__name__]
+    else:
+        print("Using Col diversity normalization")
+        div_norm = normalizations[intra_list_diversity.__name__]
+    
+    
 
     normalized_mer = 0.0
     normalized_diversity = 0.0
@@ -264,7 +308,12 @@ def custom_evaluate_voting(args, ranking, recsys_statistics,
         top_k_per_user = recommendation_list(ctx.k, [x[1] for x in ranking[i:i+args.ranking_size]])
         user, _, _ = ranking[i]
 
-        rel = rating_based_relevance(user, rating_matrix)
+        if args.use_discounting:
+            print("Using discounted rating based relevance")
+            rel = discounted_rating_based_relevance(user, rating_matrix, RATING_BASED_RELEVANCE_DISCOUNT)
+        else:
+            print("Using non-discounted rating based relevance")
+            rel = rating_based_relevance(user, rating_matrix)
         normalized_per_user_mer.append(mer_norm.predict(np.mean([rel(recommendation_list(ctx.k, [i]), ctx) for i in top_k_per_user.items]), user))
         #normalized_per_user_mer.append(np.mean([mer_norm.predict(rel(recommendation_list(ctx.k, [i]), ctx)) for i in top_k_per_user.items]))
         normalized_mer += normalized_per_user_mer[-1]
@@ -337,7 +386,7 @@ def custom_evaluate_voting(args, ranking, recsys_statistics,
 
     return results
 
-def get_voting_recommender(objective_factories, args):
+def get_voting_recommender(objective_factories, normalized_support_cache, args):
 
     voting_function_factory = \
         lambda user: constant_voting_function(
@@ -350,10 +399,14 @@ def get_voting_recommender(objective_factories, args):
         #     [obj_factory(user) for obj_factory in objective_factories],
         #     10 * len(objective_factories)
         # )
-        
+    
     # https://stackoverflow.com/questions/32595586/in-python-why-do-lambdas-in-list-comprehensions-overwrite-themselves-in-retrosp
-    supports_function_factories = [lambda user, obj_factory=obj_factory: args.support_function(obj_factory(user), user) for obj_factory in objective_factories]
-    filter_function = top_k_filter_function(2000)
+    supports_function_factories = [
+        lambda user, obj_factory=obj_factory: 
+            args.support_function(obj_factory(user), user, normalized_support_cache) for obj_factory in objective_factories
+    ]
+    
+    filter_function = top_k_filter_function(100000)
     mandate_allocator = args.mandate_allocation() #fai_strategy() # sainte_lague_method() # random_mandate_allocation()
 
     recommender = recommender_system(
@@ -362,7 +415,10 @@ def get_voting_recommender(objective_factories, args):
         filter_function,
         mandate_allocator,
         args.ranking_size,
-        args.support_normalization
+        args.support_normalization,
+        args.shift,
+        args.cache_dir,
+        "mf" if args.use_mf_baseline else "knn"
     )
     return recommender
 
@@ -419,15 +475,6 @@ def tmp_evaluate(baseline, dataset):
         prec += _precision_at_k(ranking, dataset, -1)
         n += 1
     print(f"Precision@{5} = {prec / n}")
-
-# def evaluate_precision(ranking, dataset):
-#     prec = 0.0
-#     n = 0
-#     for i in range(0, len(ranking), args.ranking_size):
-#         rank = ranking[i:i+args.ranking_size]
-#         prec += _precision_at_k(rank, dataset, args.ranking_size)
-#         n += 1
-#     print(f"Prec@{args.ranking_size} = {prec / n}")
 
 def lightfm_data_to_statistics(data_dict):
     users = set()
@@ -507,7 +554,9 @@ def normalize_recommendation_ranking(ranking, min_rating, max_rating):
     for u, i, r in ranking:
         if r > 0.0:
             r = norm(r, old_min, old_max, min_rating, max_rating)
-        assert r == 0.0 or (r >= min_rating and r <= max_rating), f"rating {r} is not normalized to [{min_rating}, {max_rating}]"
+        #assert r == 0.0 or (r >= min_rating and r <= max_rating), f"rating {r} is not normalized to [{min_rating}, {max_rating}]"
+        if r != 0.0:
+            r = np.clip(r, min_rating, max_rating)
         normalized.append((u, i, r))
 
     return normalized
@@ -549,127 +598,172 @@ def extend_rating_matrix(recsys_statistics):
             # Predict the rating based on using top-k similar items
             rating_matrix_copy[user_id, item_id] = similarities_weighted_sum / k_neighbors
             
-    original_ratings_nonzero = np.flatnonzero(recsys_statistics.rating_matrix)
-    rating_matrix_copy = norm(rating_matrix_copy, rating_matrix_copy.min(), rating_matrix_copy.max(), 1, 5)
-    np.put(rating_matrix_copy, original_ratings_nonzero, np.take(recsys_statistics.rating_matrix, original_ratings_nonzero))
+    original_ratings_nonzero_indices = np.flatnonzero(recsys_statistics.rating_matrix)
+    original_ratings_nonzero = np.take(recsys_statistics.rating_matrix, original_ratings_nonzero_indices)
+    print(f"Original matrix min: {original_ratings_nonzero.min()}, max: {original_ratings_nonzero.max()}")
+    rating_matrix_copy = norm(rating_matrix_copy, rating_matrix_copy.min(), rating_matrix_copy.max(), original_ratings_nonzero.min(), original_ratings_nonzero.max())
+    np.put(rating_matrix_copy, original_ratings_nonzero_indices, original_ratings_nonzero)
     return rating_matrix_copy
 
-def get_baseline(args):
-    print(f"########### 3. Baseline with {args.train_fold_path} train fold and {args.test_fold_path} test fold and CUSTOM evaluation ###########")
-    baseline = ItemKNN(args.train_fold_path)
-    baseline.compute(verbose=False)
+# Parse movielens metadata
+def parse_metadata(metadata_path):
+    metadata = dict()
+    with open(metadata_path, encoding="ISO-8859-1") as f:
+        for line in f.readlines():
+            [movie, movie_name, genres] = line.strip().split("::")
+            genres = genres.split("|")
+            metadata[int(movie)] = {
+                "movie_name": movie_name,
+                "genres": genres
+            }
+    return metadata
+
+def get_mf_baseline(args):
+    start_time = time.perf_counter()
+    metadata = None
+    if args.metadata_path:
+        metadata = parse_metadata(args.metadata_path)
+    print(f"Parsing metadata took: {time.perf_counter() - start_time}")
+
+    cache_path = os.path.join(args.cache_dir, "baseline_mf.pckl")
+    if os.path.exists(cache_path):
+        print(f"Loading Matrix factorization baseline from cache: {cache_path}")
+        with open(cache_path, 'rb') as f:
+            loaded_data = pickle.load(f)
+            return loaded_data["train_set_statistics"], \
+                loaded_data["test_set_statistics"], \
+                loaded_data["extended_rating_matrix"], \
+                loaded_data["extended_similarity_matrix"], \
+                metadata
+
+    start_time = time.perf_counter()
+    baseline = MatrixFactorization(args.train_fold_path)
+    print(f"Creating MatrixFactorization took: {time.perf_counter() - start_time}")
+
+    BaseRatingPrediction.compute(baseline)
+    baseline.init_model()
+    baseline.fit()
+    baseline.create_matrix()
+    similarity_matrix = baseline.compute_similarity(transpose=True)
+
+    extended_rating_matrix = baseline.matrix.copy()
+    for u_id in range(extended_rating_matrix.shape[0]):
+        for i_id in range(extended_rating_matrix.shape[1]):
+            if extended_rating_matrix[u_id, i_id] == 0.0:
+                extended_rating_matrix[u_id, i_id] = baseline._predict_score(u_id, i_id)
+
+
+    start_time = time.perf_counter()
     test_set = ReadFile(args.test_fold_path).read()
+    print(f"Reading Testset took: {time.perf_counter() - start_time}")
+
+    start_time = time.perf_counter()
     train_set_statistics, test_set_statistics = dataset_to_statistics(baseline.train_set), dataset_to_statistics(test_set)
-    print("Custom evaluate on normalized ranking from item recommendation ItemKNN")
-    normalized_ranking = normalize_recommendation_ranking(baseline.ranking, 1.0, 5.0)
-    recsys_statistics = recommender_statistics(baseline.matrix, baseline.si_matrix, baseline.user_to_user_id, baseline.item_to_item_id)
-    data_statistics = test_set_statistics #merge_statistics(train_set_statistics, test_set_statistics)
-    custom_evaluate(
-        args,
-        baseline.ranking, #trim_total_ranking(normalized_ranking, 50 * args.ranking_size),
-        recsys_statistics,
-        data_statistics,
-        normalized_ranking
-    )
+    print(f"Dataset to statistics took: {time.perf_counter() - start_time}")
+    
+    recsys_statistics = recommender_statistics(baseline.matrix, similarity_matrix, baseline.user_to_user_id, baseline.item_to_item_id)
+
+    start_time = time.perf_counter()
     extended_rating_matrix = extend_rating_matrix(recsys_statistics) #project_ranking_into_rating_matrix(normalized_ranking, recsys_statistics)
-    # print("########### 4. Baseline with merged train+test (Case recommender folds) statistics for evaluation ###########")
-    # tmp_evaluate(baseline, merge_statistics(train_set_statistics, test_set_statistics))
-    # evaluate_precision(baseline.ranking, merge_statistics(train_set_statistics, test_set_statistics))
-    
-    # print("########### 5. Baseline (trained on Case recommender folds) with merged train+test (Lightfm folds) statistics for evaluation ###########")
-    # tmp_evaluate(baseline, merge_statistics(train, test))
-    # evaluate_precision(baseline.ranking, merge_statistics(train, test))
+    print(f"Extending rating matrix took: {time.perf_counter() - start_time}")
 
-    # print("########### 5+. Baseline (trained on lightfm folds) with merged train+test (Lightfm folds) statistics for evaluation ###########")
-    # evaluate_precision(lightfm_baseline.ranking, merge_statistics(train, test))
-    
-    # def normalize_ranking(ranking):
-    #     max_acc_rating = max(ranking, key=lambda x: x[2])[2]
-    #     min_acc_rating = min(ranking, key=lambda x: x[2])[2]
-    #     def rescale(x, initial_range, new_range):
-    #         if initial_range[1] - initial_range[0] == 0:
-    #             if x != new_range[0] and x != new_range[1]:
-    #                 return new_range[0]
-    #             else:
-    #                 return x
-    #         normalized = (x - initial_range[0]) / (initial_range[1] - initial_range[0])
-    #         return (normalized * (new_range[1] - new_range[0])) + new_range[0]
-    #     assert min_acc_rating >= 0.0
-    #     return list(map(lambda x: (x[0], x[1], rescale(x[2], (min_acc_rating, max_acc_rating), (0.0, 5.0))), ranking))
-
-    # def run_rating_item_knn(recommender, train_statistics, test_statistics, recsys_statistics):
-    
-    #     per_user_predictions = defaultdict(lambda: [])
-    #     for u, i, r in recommender.predictions:
-    #         per_user_predictions[u].append((i, r))
-
-    #     ranking = []
-    #     for u, predictions in per_user_predictions.items():
-    #         sorted_predictions = sorted(predictions, key=lambda x: x[1], reverse=True)
-    #         sorted_predictions = sorted_predictions[:10]
-    #         assert len(sorted_predictions) == 10
-    #         ranking.extend(list(map(lambda x: (u, x[0], x[1]), sorted_predictions)))
-
-    #     merged_statistics = merge_statistics(train_set_statistics, test_set_statistics)
-
-    #     print("Custom evaluate on non-normalized ranking:")
-    #     normalized_ranking = normalize_ranking(ranking)
-    #     custom_evaluate(
-    #         ranking,
-    #         recsys_statistics,
-    #         merged_statistics
-    #     )
-
-    #     print("Custom evaluate on normalized ranking")
-    #     custom_evaluate(
-    #         normalized_ranking,
-    #         recsys_statistics,
-    #         merged_statistics
-    #     )
-
-    #     evaluate_precision(normalized_ranking, merge_statistics(train_statistics, test_statistics))
-
-    # Takes rating predictions and fills them into (partially-filled) rating matrix
-    
-
-
-
-    # print("########### 6. RatingItemKNN with Case recommender folds ###########")
-    # baseline = RatingItemKNN(train_fold_path, as_similar_first=True)
-    # baseline.compute()
-    # baseline_recsys_statistics = recommender_statistics(baseline.matrix, baseline.si_matrix, baseline.user_to_user_id, baseline.item_to_item_id)
-    # run_rating_item_knn(baseline, train_set_statistics, test_set_statistics, baseline_recsys_statistics)
-    
-    # print("########### 7. RatingItemKNN with Lightfm folds ###########")
-    # lightfm_baseline = RatingItemKNN("lightfm_train.dat")
-    # lightfm_baseline.compute()
-    # run_rating_item_knn(lightfm_baseline, train, test)
-
-    # def calculate_user_overlap(train_statistics, test_statistics):
-    #     return {
-    #         "train_users": len(train_statistics.users),
-    #         "test_users": len(test_statistics.users),
-    #         "total_users": len(train_statistics.users.union(test_statistics.users)),
-    #         "users_overlap": len(train_statistics.users.intersection(test_statistics.users))
-    #     }
-
-    # print(f"Lightfm folds user overlap: {calculate_user_overlap(train, test)}")
-    # print(f"Case recommender folds user overlap: {calculate_user_overlap(train_set_statistics, test_set_statistics)}")
-
-    # def fill_rating_matrix(rating_predictions, rating_matrix, recsys_statistics):
-    #     filled_rating_matrix = rating_matrix.copy()
-    #     for u, i, r in rating_predictions:
-    #         filled_rating_matrix[recsys_statistics.user_to_user_id[u], recsys_statistics.item_to_item_id[i]] = r
-    #     return filled_rating_matrix
-
-    # Return some statistics for the selected basel
-
+    start_time = time.perf_counter()
     extended_similarity_matrix = np.float32(squareform(pdist(baseline.matrix.T, "cosine")))
     #extended_similarity_matrix = np.float32(squareform(pdist(extended_rating_matrix.T, "cosine")))
     extended_similarity_matrix[np.isnan(extended_similarity_matrix)] = 1.0
     extended_similarity_matrix = 1.0 - extended_similarity_matrix
+    print(f"Similarity matrix computation took: {time.perf_counter()}")
+    
+    with open(cache_path, 'wb') as f:
+        print(f"Saving baseline cache to: {cache_path}")
+        pickle.dump({
+            "train_set_statistics": train_set_statistics,
+            "test_set_statistics": test_set_statistics,
+            "extended_rating_matrix": extended_rating_matrix,
+            "extended_similarity_matrix": extended_similarity_matrix
+        }, f)
 
-    return train_set_statistics, test_set_statistics, extended_rating_matrix, extended_similarity_matrix
+    return train_set_statistics, test_set_statistics, extended_rating_matrix, extended_similarity_matrix, metadata
+
+def get_baseline(args):
+    start_time = time.perf_counter()
+    metadata = None
+    if args.metadata_path:
+        metadata = parse_metadata(args.metadata_path)
+    print(f"Parsing metadata took: {time.perf_counter() - start_time}")
+
+    cache_path = os.path.join(args.cache_dir, "baseline.pckl")
+    if os.path.exists(cache_path):
+        print(f"Loading baseline from cache: {cache_path}")
+        with open(cache_path, 'rb') as f:
+            loaded_data = pickle.load(f)
+            return loaded_data["train_set_statistics"], \
+                loaded_data["test_set_statistics"], \
+                loaded_data["extended_rating_matrix"], \
+                loaded_data["extended_similarity_matrix"], \
+                metadata
+
+    print(f"########### 3. Baseline with {args.train_fold_path} train fold and {args.test_fold_path} test fold and CUSTOM evaluation ###########")
+    
+    start_time = time.perf_counter()
+    baseline = ItemKNN(args.train_fold_path)
+    print(f"Creating ItemKNN took: {time.perf_counter() - start_time}")
+
+    #start_time = time.perf_counter()
+    #baseline.compute(verbose=False)
+    #print(f"Compute took: {time.perf_counter() - start_time}")
+    BaseItemRecommendation.compute(baseline)
+    baseline.init_model()
+
+    start_time = time.perf_counter()
+    metadata = None
+    if args.metadata_path:
+        metadata = parse_metadata(args.metadata_path)
+    print(f"Parsing metadata took: {time.perf_counter() - start_time}")
+
+    start_time = time.perf_counter()
+    test_set = ReadFile(args.test_fold_path).read()
+    print(f"Reading Testset took: {time.perf_counter() - start_time}")
+
+    start_time = time.perf_counter()
+    train_set_statistics, test_set_statistics = dataset_to_statistics(baseline.train_set), dataset_to_statistics(test_set)
+    print(f"Dataset to statistics took: {time.perf_counter() - start_time}")
+    
+    # start_time = time.perf_counter()
+    # print("Custom evaluate on normalized ranking from item recommendation ItemKNN")
+    # normalized_ranking = normalize_recommendation_ranking(baseline.ranking, 1.0, 5.0)
+    recsys_statistics = recommender_statistics(baseline.matrix, baseline.si_matrix, baseline.user_to_user_id, baseline.item_to_item_id)
+    # data_statistics = test_set_statistics #merge_statistics(train_set_statistics, test_set_statistics)
+    # custom_evaluate(
+    #     args,
+    #     baseline.ranking, #trim_total_ranking(normalized_ranking, 50 * args.ranking_size),
+    #     recsys_statistics,
+    #     data_statistics,
+    #     normalized_ranking
+    # )
+    # print(f"Custom evaluate took: {time.perf_counter() - start_time}")
+    
+    start_time = time.perf_counter()
+    extended_rating_matrix = extend_rating_matrix(recsys_statistics) #project_ranking_into_rating_matrix(normalized_ranking, recsys_statistics)
+    print(f"Extending rating matrix took: {time.perf_counter() - start_time}")
+
+    start_time = time.perf_counter()
+    extended_similarity_matrix = np.float32(squareform(pdist(baseline.matrix.T, "cosine")))
+    #extended_similarity_matrix = np.float32(squareform(pdist(extended_rating_matrix.T, "cosine")))
+    extended_similarity_matrix[np.isnan(extended_similarity_matrix)] = 1.0
+    extended_similarity_matrix = 1.0 - extended_similarity_matrix
+    print(f"Similarity matrix computation took: {time.perf_counter()}")
+    
+    with open(cache_path, 'wb') as f:
+        print(f"Saving baseline cache to: {cache_path}")
+        pickle.dump({
+            "train_set_statistics": train_set_statistics,
+            "test_set_statistics": test_set_statistics,
+            "extended_rating_matrix": extended_rating_matrix,
+            "extended_similarity_matrix": extended_similarity_matrix
+        }, f)
+
+    return train_set_statistics, test_set_statistics, extended_rating_matrix, extended_similarity_matrix, metadata
     
 def voting_recommendation(args):
     
@@ -678,20 +772,83 @@ def voting_recommendation(args):
     print("Voting case")
     print(get_separator())
     print(get_separator())
-    train, test, filled_rating_matrix, filled_similarity_matrix = get_baseline(args)
+    start_time = time.perf_counter()
+    
+    if args.use_mf_baseline:
+        train, test, filled_rating_matrix, filled_similarity_matrix, metadata = get_mf_baseline(args)
+    else:
+        train, test, filled_rating_matrix, filled_similarity_matrix, metadata = get_baseline(args)
+    
+    print(f"Get_baseline took: {time.perf_counter() - start_time}")
     # TODO do rating prediction and update the matrix below (for the unseen values inside result of rating prediction)
     #for u, i, r in recommender.predictions:
     #    rating_matrix[recommender.user_to_user_id[u], recommender.item_to_item_id[i]] = r
     
 
     # Normalize from [1, 5] to [0, 1]
-    filled_rating_matrix = (filled_rating_matrix - 1.0) / 4.0
-    objective_factories = [
-        lambda user: rating_based_relevance(user, filled_rating_matrix),
-        lambda _: intra_list_diversity(filled_similarity_matrix),
-        lambda _: popularity_complement() #expected_popularity_complement()
-    ]
-    voting = get_voting_recommender(objective_factories, args)
+    print(f"Filled rating matrix min: {filled_rating_matrix.min()}, max: {filled_rating_matrix.max()}")
+    filled_rating_matrix = (filled_rating_matrix - filled_rating_matrix.min()) / (filled_rating_matrix.max() - filled_rating_matrix.min())
+    filled_distance_matrix = 1.0 - filled_similarity_matrix
+    
+    if args.use_cb_diversity:
+        print("Using CB diversity")
+        if args.use_discounting:
+            print("Using discounted versions of the objectives")
+            objective_factories = [
+                lambda user: discounted_rating_based_relevance(user, filled_rating_matrix, RATING_BASED_RELEVANCE_DISCOUNT),
+                lambda _: content_based_diversity(metadata),
+                lambda _: discounted_popularity_complement(POPULARITY_COMPLEMENT_DISCOUNT) #expected_popularity_complement()
+            ]
+        else:
+            print("Using default, non-discounted versions of the objectives")
+            objective_factories = [
+                lambda user: rating_based_relevance(user, filled_rating_matrix),
+                lambda _: content_based_diversity(metadata),
+                lambda _: popularity_complement() #expected_popularity_complement()
+            ]
+    else:
+        print("Using Col diversity")
+        if args.use_discounting:
+            print("Using discounted versions of the objectives")
+            objective_factories = [
+                lambda user: discounted_rating_based_relevance(user, filled_rating_matrix, RATING_BASED_RELEVANCE_DISCOUNT),
+                lambda _: intra_list_diversity(filled_distance_matrix),
+                lambda _: discounted_popularity_complement(POPULARITY_COMPLEMENT_DISCOUNT) #expected_popularity_complement()
+            ]
+        else:
+            print("Using default, non-discounted versions of the objectives")
+            objective_factories = [
+                lambda user: rating_based_relevance(user, filled_rating_matrix),
+                lambda _: intra_list_diversity(filled_distance_matrix),
+                lambda _: popularity_complement() #expected_popularity_complement()
+            ]
+        
+    
+
+    # Load the Cache
+    normalized_support_cache_paths = []
+    normalized_support_cache = dict()
+    normalized_support_cache_sizes = defaultdict(int)
+    obj_names = [obj_factory(None).get_name() for obj_factory in objective_factories]
+    for obj_name in obj_names:
+        baseline_name = "mf" if args.use_mf_baseline else "knn"
+        cache_name = f"{obj_name}_normalized_support_{baseline_name}"
+        if args.support_normalization:
+            cache_name = f"{args.support_normalization.__name__}_{obj_name}_normalized_support_{baseline_name}"
+        normalized_support_cache_paths.append(
+            os.path.join(args.cache_dir, f"{cache_name}.pckl")
+        )
+        if os.path.exists(normalized_support_cache_paths[-1]):
+            print(f"Loading obj_cache from: {normalized_support_cache_paths[-1]}")
+            with open(normalized_support_cache_paths[-1], 'rb') as f:
+                    normalized_support_cache[obj_name] = pickle.load(f)
+                    normalized_support_cache_sizes[obj_name] = len(normalized_support_cache[obj_name])
+        else:
+            print(f"Cache {normalized_support_cache_paths[-1]} does not exist")
+            normalized_support_cache[obj_name] = dict()
+            normalized_support_cache_sizes[obj_name] = 0
+
+    voting = get_voting_recommender(objective_factories, normalized_support_cache, args)
     print("Starting training of voting recommender")
     recsys_statistics = voting.train(train) # Trains the recommender
     print("Predicting with voting recommender")
@@ -702,6 +859,24 @@ def voting_recommendation(args):
         return set(list(users)[:n])
 
     ranking, per_user_supports = voting.predict_batched(take_users(test.users, -1)) #voting.predict_batched(list(test.users)[:50]) # Generates ranking for all the users in the test dataset
+    
+    # Write back the cache
+    for obj_name in obj_names:
+
+        print(f"Cache increased by: {len(normalized_support_cache[obj_name]) - normalized_support_cache_sizes[obj_name]}, old size: {normalized_support_cache_sizes[obj_name]} new size: {len(normalized_support_cache[obj_name])}")
+        
+        if normalized_support_cache_sizes[obj_name] == 0 and len(normalized_support_cache[obj_name]) > 0:
+            baseline_name = "mf" if args.use_mf_baseline else "knn"
+            cache_name = f"{obj_name}_normalized_support_{baseline_name}"
+            if args.support_normalization:
+                cache_name = f"{args.support_normalization.__name__}_{obj_name}_normalized_support_{baseline_name}"
+            normalized_support_cache_path = os.path.join(args.cache_dir, f"{cache_name}.pckl")
+            start_time = time.perf_counter()
+            with open(normalized_support_cache_path, 'wb') as f:
+                print(f"Saving obj_cache to: {normalized_support_cache_path}")
+                pickle.dump(normalized_support_cache[obj_name], f)
+            print(f"Saving took: {time.perf_counter() - start_time}")
+
     # Add ratings to the voting (as estimated by the base recommender) because the ratings in ranking come from a rating matrix which contained only known interactions + those estimated FOR UKNOWN users (i.e. mostly zeros everywhere)
     extended_ranking = []
     for u, i, r in ranking:
@@ -720,7 +895,7 @@ def voting_recommendation(args):
     normalized_ranking = ranking #normalize_recommendation_ranking(ranking, 1.0, 5.0)
     data_statistics = test #merge_statistics(train, test)
     #results = custom_evaluate(args, ranking, recsys_statistics, data_statistics, normalized_ranking)
-    results = custom_evaluate_voting(args, ranking, recsys_statistics, data_statistics, normalized_ranking, voting, filled_rating_matrix, filled_similarity_matrix)
+    results = custom_evaluate_voting(args, ranking, recsys_statistics, data_statistics, normalized_ranking, voting, filled_rating_matrix, filled_similarity_matrix, metadata)
 
     averaged_supports = defaultdict(lambda: dict()) # TODO REMOVE
     for party, values in per_user_supports.items():
@@ -751,24 +926,33 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_path", type=str, default="/Users/pdokoupil/Downloads/ml-100k/u.data", help="Path to the dataset file")
-    parser.add_argument("--fold_dest", type=str, default="C:/Users/PD/Downloads/ml-100k-folds/newlightfmfolds", help="Path to the directory where folds could be stored")
+    parser.add_argument("--fold_dest", type=str, default="/Users/pdokoupil/Downloads/ml-1m-folds/rndlightfmfolds", help="Path to the directory where folds could be stored")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--separator", type=str, default="\t")
     parser.add_argument("--objective_weights", type=str, default="0.5,0.25,0.25", help="Weights of the individual objectives, in format 'x, y, z'")
     parser.add_argument(
         "--mandate_allocation", type=str, default="exactly_proportional_fuzzy_dhondt_2",
-        help="allowed values are {exactly_proportional_fuzzy_dhondt, exactly_proportional_fuzzy_dhondt_2, fai_strategy, random_mandate_allocation, sainte_lague_method, exactly_proportional_fai_strategy}"
+        help="allowed values are {exactly_proportional_fuzzy_dhondt, exactly_proportional_fuzzy_dhondt_2, fai_strategy, random_mandate_allocation, sainte_lague_method, exactly_proportional_fai_strategy, probabilistic_fai_strategy, weighted_average_strategy}"
     )
     parser.add_argument("--experiment_name", type=str)
     parser.add_argument("--ranking_size", type=int, default=10)
     parser.add_argument("--output_path_prefix", type=str, default=".") # TODO CHANGE TO /MNT/...
     parser.add_argument("--support_normalization", type=str, default="cdf", help="which normalization to use, allowed values are {None, standardization, cdf, min_max_scaling}")
+    parser.add_argument("--shift", type=float, default=0.0)
     parser.add_argument("--support_function", type=str, default="normalizing_marginal_gain_support_function")
+    parser.add_argument("--metadata_path", type=str)
+    parser.add_argument("--use_mf_baseline", action="store_true", default=False)
+    parser.add_argument("--use_cb_diversity", action="store_true", default=False)
+    parser.add_argument("--use_discounting", action="store_true", default=False)
     args = parser.parse_args()
+
+    if args.use_cb_diversity:
+        assert args.metadata_path, "CB diversity needs metadata to be specified"
+
     args.objective_weights = list(map(float, args.objective_weights.split(",")))
 
     if not args.experiment_name:
-        args.experiment_name = f"N={args.support_normalization},MA={args.mandate_allocation},W={args.objective_weights},SF={args.support_function}" # Default experiment name
+        args.experiment_name = f"N={args.support_normalization},MA={args.mandate_allocation},W={args.objective_weights},SF={args.support_function},SH={args.shift}" # Default experiment name
 
     args.mandate_allocation = globals()[args.mandate_allocation] # Get factory/constructor for mandate allocation algorithm
     args.support_function = globals()[args.support_function]
@@ -783,6 +967,9 @@ def main():
     args.train_fold_path = f"{args.fold_dest}/0/train.dat"
     args.test_fold_path = f"{args.fold_dest}/0/test.dat"
     print(f"Fold paths: {args.train_fold_path}, {args.test_fold_path}")
+
+    args.cache_dir = f"{args.fold_dest}/0/"
+    print(f"Cache dir: {args.cache_dir}")
     
     print(f"Starting experiment: {args.experiment_name}, with arguments:")
     for arg_name in dir(args):
