@@ -1,8 +1,14 @@
 # Inverse popularity / popularity complement novelty metric
-class popularity_complement:
+class discounted_popularity_complement:
+    def __init__(self, discount):
+        self.discount = discount
+
     def is_discounted(self):
-        return False    
-    
+        return True
+
+    def get_discount(self, k):
+        return self.discount ** k
+
     def __call__(self, recommendation_list, context, m=None):
         if m is None:
             m = len(recommendation_list.items)
@@ -12,8 +18,8 @@ class popularity_complement:
 
         nov = 0.0
         #n = 0
-        for item in recommendation_list.items[:m]:
-            nov += (1.0 - self._popularity(item, context))
+        for k, item in enumerate(recommendation_list.items[:m]):
+            nov += self.get_discount(k) * (1.0 - self._popularity(item, context))
             #n += 1
 
         return nov # / n
@@ -39,7 +45,7 @@ class popularity_complement:
         
         #n = len(old_recommendation_list)
         #return ((old_recommendation_list_value * n) + (1.0 - self._popularity(new_item, context))) / (n + 1)
-        return old_recommendation_list_value + (1.0 - self._popularity(new_item, context))
+        return old_recommendation_list_value + self.get_discount(len(old_recommendation_list)) * (1.0 - self._popularity(new_item, context))
 
     def get_name(self):
         return self.__class__.__name__

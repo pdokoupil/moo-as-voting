@@ -1,12 +1,16 @@
 import numpy as np
 
-class rating_based_relevance:
-    def __init__(self, user, rating_matrix):
+class discounted_rating_based_relevance:
+    def __init__(self, user, rating_matrix, discount):
         self.user = user
         self.rating_matrix = rating_matrix
+        self.discount = discount
 
     def is_discounted(self):
-        return False
+        return True
+
+    def get_discount(self, k):
+        return self.discount ** k
 
     def __call__(self, recommendation_list, context, m=None):
         n = len(recommendation_list.items)
@@ -25,9 +29,9 @@ class rating_based_relevance:
             rating_row = self.rating_matrix[user_id]
         
         ratings = 0.0
-        for item in recommendation_list.items[:m]:
+        for k, item in enumerate(recommendation_list.items[:m]):
             item_id = context.recsys_statistics.item_to_item_id[item]
-            ratings += rating_row[item_id]
+            ratings += self.get_discount(k) *rating_row[item_id]
 
         return ratings #/ n
 
@@ -50,7 +54,7 @@ class rating_based_relevance:
         else:
             rating = self.rating_matrix[user_id, item_id]
         #return ((old_recommendation_list_value * n) + rating) / (n + 1)
-        return old_recommendation_list_value + rating
+        return old_recommendation_list_value + self.get_discount(len(old_recommendation_list)) * rating
 
     def get_name(self):
         return self.__class__.__name__

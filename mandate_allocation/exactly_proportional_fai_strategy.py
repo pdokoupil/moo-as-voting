@@ -21,7 +21,7 @@ class exactly_proportional_fai_strategy:
         return parties[next_idx], next_idx
 
     # Expected to be called iteratively
-    def __call__(self, candidate_groups, votes, partial_list, num_mandates):
+    def __call__(self, candidate_groups, votes, partial_list, num_mandates, *args):
         vote_values = np.fromiter(votes.values(), dtype=np.float64)
         assert np.isclose(np.sum(vote_values), 1.0), f"Votes {votes} must be normalized" # So they correspond to objective weights directly
         

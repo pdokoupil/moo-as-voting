@@ -1,7 +1,7 @@
 import numpy as np
 class random_mandate_allocation:
     # Expected to be called iteratively
-    def __call__(self, candidate_groups, votes, partial_list, num_mandates):
+    def __call__(self, candidate_groups, votes, partial_list, num_mandates, *args):
         objective_names = list(candidate_groups.keys())
         # For the given position, we sample randomly the canditate groups
         objective_name = np.random.choice(objective_names, 1)[0]

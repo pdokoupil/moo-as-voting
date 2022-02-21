@@ -6,7 +6,7 @@ class sainte_lague_method:
         self._initialize()
 
     # Expected to be called iteratively
-    def __call__(self, candidate_groups, votes, partial_list, num_mandates):
+    def __call__(self, candidate_groups, votes, partial_list, num_mandates, *args):
         if self.last_call_votes is None:
             self.last_call_votes = votes
         assert self.last_call_votes == votes, "Votes cannot change in-between calls" # TODO implement

@@ -22,23 +22,23 @@ class exactly_proportional_fuzzy_dhondt:
         votes = {p: 0.0 if v == 0.0 else v / sum(votes.values()) for p, v in votes.items()}
 
         
-        # Map supports from [-1, 1] to [0, 1]
-        def map_support(support):
-            return (support + 1.0) / 2.0
+        # # Map supports from [-1, 1] to [0, 1]
+        # def map_support(support):
+        #     return (support + 1.0) / 2.0
 
-        # Normalize supports (sum of squares per party should be 1)
-        per_party_support_sum = {p: sum(map(lambda support: map_support(support) ** 2, candidate_groups[p].values())) for p in parties}
+        # # Normalize supports (sum of squares per party should be 1)
+        # per_party_support_sum = {p: sum(map(lambda support: map_support(support) ** 2, candidate_groups[p].values())) for p in parties}
         
-        for party, candidate_group in candidate_groups.items():
-            for item, support in candidate_group.items():
-                if per_party_support_sum[party] > 0.0:
-                    candidate_group[item] = map_support(support) / np.sqrt(per_party_support_sum[party])
+        # for party, candidate_group in candidate_groups.items():
+        #     for item, support in candidate_group.items():
+        #         if per_party_support_sum[party] > 0.0:
+        #             candidate_group[item] = map_support(support) / np.sqrt(per_party_support_sum[party])
 
         tot_items = defaultdict(lambda: self.tot)
 
         def support_towards_party(item, party):
             if item in candidate_groups[party]:
-                return map_support(candidate_groups[party][item])    
+                return candidate_groups[party][item]    
             return 0.0
 
         def total_support_towards_party(party):
@@ -49,7 +49,7 @@ class exactly_proportional_fuzzy_dhondt:
 
         for _, candidate_group in candidate_groups.items():
             for candidate, support in candidate_group.items():
-                tot_items[candidate] += map_support(support)
+                tot_items[candidate] += support
                 
         gain_items = defaultdict(float)
         for party_name, candidate_group in candidate_groups.items():
